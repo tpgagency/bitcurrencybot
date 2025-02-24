@@ -105,25 +105,24 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
     to_code = to_data['id']
     
     try:
-    url = f"https://api.coingecko.com/api/v3/simple/price?ids={from_id}&vs_currencies={to_code}"
-    response = requests.get(url, timeout=10).json()
-    logger.info(f"API response for {from_id} to {to_code}: {json.dumps(response)}")
-    
-    if not response or from_id not in response:
-        return None, f"Курс недоступен: API вернул пустой ответ или нет {from_id}"
-    if to_code not in response[from_id]:
-        return None, f"Курс недоступен: нет данных для {to_code}"
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids={from_id}&vs_currencies={to_code}"
+        response = requests.get(url, timeout=10).json()
+        logger.info(f"API response for {from_id} to {to_code}: {json.dumps(response)}")
         
-    rate = response[from_id][to_code]
-    if rate == 0 or rate is None:
-        return None, "Курс недоступен (нулевое значение)."
-    result = amount * rate
-    redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
-    return result, rate
-except Exception as e:
-    logger.error(f"Error fetching rate: {e}, response: {response.text if 'response' in locals() else 'No response'}")
-    return None, f"Ошибка получения курса: {str(e)}"
-
+        if not response or from_id not in response:
+            return None, f"Курс недоступен: API вернул пустой ответ или нет {from_id}"
+        if to_code not in response[from_id]:
+            return None, f"Курс недоступен: нет данных для {to_code}"
+        
+        rate = response[from_id][to_code]
+        if rate == 0 or rate is None:
+            return None, "Курс недоступен (нулевое значение)."
+        result = amount * rate
+        redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
+        return result, rate
+    except Exception as e:
+        logger.error(f"Error fetching rate: {e}, response: {response.text if 'response' in locals() else 'No response'}")
+        return None, f"Ошибка получения курса: {str(e)}"
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
     save_stats(user_id, "start")
