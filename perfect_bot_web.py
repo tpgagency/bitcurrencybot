@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'trust20242024')  # Пароль из переменной окружения
 ADMIN_PASSWORD_HASH = generate_password_hash(ADMIN_PASSWORD) if os.getenv('ADMIN_PASSWORD') else generate_password_hash('trust20242024')
 REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
-redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True, ssl_cert_reqs="none")
 
 # Инициализация STATS в Redis, если пусто
 def init_stats():
