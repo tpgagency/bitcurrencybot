@@ -25,7 +25,7 @@ if not CRYPTO_PAY_TOKEN:
     logger.error("CRYPTO_PAY_TOKEN not set")
     exit(1)
 
-AD_MESSAGE = "\n\n📢 Реклама: Подпишись на @YourChannel для новостей о крипте!"
+AD_MESSAGE = "\n\n📢 Реклама: Подпишись на @tpgbit для новостей о крипте!"
 FREE_REQUEST_LIMIT = 5
 SUBSCRIPTION_PRICE = 5
 CACHE_TIMEOUT = 120
