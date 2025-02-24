@@ -4,7 +4,7 @@ import time
 import logging
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import redis
 from telegram.error import NetworkError, RetryAfter
 
@@ -25,7 +25,7 @@ if not CRYPTO_PAY_TOKEN:
     logger.error("CRYPTO_PAY_TOKEN not set")
     exit(1)
 
-AD_MESSAGE = "\n\n📢 Реклама: Подпишись на @tpgbit для новостей о крипте!"
+AD_MESSAGE = "\n\n📢 Реклама: Подпишись на @YourChannel для новостей о крипте!"
 FREE_REQUEST_LIMIT = 5
 SUBSCRIPTION_PRICE = 5
 CACHE_TIMEOUT = 120
@@ -189,6 +189,10 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Ошибка связи с платежной системой")
 
 async def check_payment_job(context: ContextTypes.DEFAULT_TYPE):
+    if not hasattr(context, 'user_data') or context.user_data is None:
+        logger.debug("No user_data available in context, skipping payment check")
+        return
+    
     for user_id, data in list(context.user_data.items()):
         if "invoice_id" not in data:
             continue
