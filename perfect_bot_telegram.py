@@ -30,7 +30,7 @@ if not CRYPTO_PAY_TOKEN:
 AD_MESSAGE = "\n\n📢 Подпишись на @tpgbit для новостей о крипте!"
 FREE_REQUEST_LIMIT = 5
 SUBSCRIPTION_PRICE = 5
-CACHE_TIMEOUT = 120
+CACHE_TIMEOUT = 5  # Кэш на 5 секунд для реального времени
 ADMIN_IDS = ["1058875848", "6403305626"]
 
 # API endpoints
@@ -62,7 +62,7 @@ CURRENCIES = {
     'matic': {'code': 'MATIC'}
 }
 
-# Фиксированные курсы для fallback
+# Фиксированные курсы для fallback (используются только при ошибках API)
 UAH_TO_USDT_FALLBACK = 0.0239  # 1 UAH ≈ 0.0239 USDT
 USDT_TO_UAH_FALLBACK = 41.84   # 1 USDT ≈ 41.84 UAH
 
@@ -164,11 +164,11 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
     to_key = to_currency.lower()
     cache_key = f"rate:{from_key}_{to_key}"
     
-    # Проверяем кэш
+    # Проверяем кэш (короткий срок действия для реального времени)
     cached = redis_client.get(cache_key)
     if cached:
         rate = float(cached)
-        logger.info(f"Cache hit: {from_key} to {to_key} = {rate}")
+        logger.info(f"Cache hit (real-time): {from_key} to {to_key} = {rate}")
         return amount * rate, rate
     
     from_data = CURRENCIES.get(from_key)
@@ -186,77 +186,88 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
         redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
         return amount * rate, rate
 
-    # 1. Binance API
+    # 1. Binance API (приоритет для криптовалют)
     try:
         # Прямой запрос (from_code/to_code)
         pair = f"{from_code}{to_code}"
-        response = requests.get(f"{BINANCE_API_URL}?symbol={pair}", timeout=10).json()
+        response = requests.get(f"{BINANCE_API_URL}?symbol={pair}", timeout=5).json()
         if 'price' in response:
             rate = float(response['price'])
             if rate <= 0:
                 raise ValueError(f"Invalid Binance rate for {pair}: {rate}")
-            logger.info(f"Binance direct rate: {pair} = {rate}")
+            logger.info(f"Binance direct rate (real-time): {pair} = {rate}")
             redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
             return amount * rate, rate
         
         # Обратный запрос (to_code/from_code)
         reverse_pair = f"{to_code}{from_code}"
-        response = requests.get(f"{BINANCE_API_URL}?symbol={reverse_pair}", timeout=10).json()
+        response = requests.get(f"{BINANCE_API_URL}?symbol={reverse_pair}", timeout=5).json()
         if 'price' in response:
             reverse_rate = float(response['price'])
             if reverse_rate <= 0:
                 raise ValueError(f"Invalid Binance reverse rate for {reverse_pair}: {reverse_rate}")
             rate = 1 / reverse_rate
-            logger.info(f"Binance reverse rate: {reverse_pair} = {rate}")
+            logger.info(f"Binance reverse rate (real-time): {reverse_pair} = {rate}")
             redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
             return amount * rate, rate
         
-        # Расчёт через USDT
+        # Расчёт через USDT (from -> USDT -> to)
         rate_from_usdt = None
-        rate_to_usdt = None
+        rate_usdt_to = None
         
         # from → USDT
         if from_key != 'usdt':
             from_usdt_pair = f"{from_code}USDT"
-            response_from = requests.get(f"{BINANCE_API_URL}?symbol={from_usdt_pair}", timeout=10).json()
+            response_from = requests.get(f"{BINANCE_API_URL}?symbol={from_usdt_pair}", timeout=5).json()
             if 'price' in response_from:
-                rate_from_usdt = float(response_from['price'])
+                rate_from_usdt = float(response_from['price'])  # Сколько USDT за 1 from_code
                 logger.debug(f"Binance {from_usdt_pair} = {rate_from_usdt}")
+            else:
+                usdt_from_pair = f"USDT{from_code}"
+                response_from_reverse = requests.get(f"{BINANCE_API_URL}?symbol={usdt_from_pair}", timeout=5).json()
+                if 'price' in response_from_reverse:
+                    rate_from_usdt = 1 / float(response_from_reverse['price'])
+                    logger.debug(f"Binance {usdt_from_pair} = {rate_from_usdt} (inverse)")
         else:
             rate_from_usdt = 1.0
         
         # USDT → to
         if to_key != 'usdt':
             usdt_to_pair = f"USDT{to_code}"
-            response_to = requests.get(f"{BINANCE_API_URL}?symbol={usdt_to_pair}", timeout=10).json()
+            response_to = requests.get(f"{BINANCE_API_URL}?symbol={usdt_to_pair}", timeout=5).json()
             if 'price' in response_to:
-                usdt_to_rate = float(response_to['price'])
-                rate_to_usdt = 1 / usdt_to_rate
-                logger.debug(f"Binance {usdt_to_pair} = {usdt_to_rate}, inverse = {rate_to_usdt}")
+                rate_usdt_to = 1 / float(response_to['price'])  # Сколько to_code за 1 USDT
+                logger.debug(f"Binance {usdt_to_pair} = {1/rate_usdt_to}, inverse = {rate_usdt_to}")
+            else:
+                to_usdt_pair = f"{to_code}USDT"
+                response_to_reverse = requests.get(f"{BINANCE_API_URL}?symbol={to_usdt_pair}", timeout=5).json()
+                if 'price' in response_to_reverse:
+                    rate_usdt_to = float(response_to_reverse['price'])
+                    logger.debug(f"Binance {to_usdt_pair} = {rate_usdt_to}")
         else:
-            rate_to_usdt = 1.0
+            rate_usdt_to = 1.0
         
-        if rate_from_usdt and rate_to_usdt:
-            rate = rate_from_usdt * rate_to_usdt
+        if rate_from_usdt and rate_usdt_to:
+            rate = rate_from_usdt * rate_usdt_to  # from -> USDT -> to
             if rate <= 0:
                 raise ValueError(f"Invalid Binance calculated rate: {rate}")
-            logger.info(f"Binance rate via USDT: {from_key} to {to_key} = {rate}")
+            logger.info(f"Binance rate via USDT (real-time): {from_key} to {to_key} = {rate}")
             redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
             return amount * rate, rate
 
     except Exception as e:
         logger.warning(f"Binance API failed for {from_key} to {to_key}: {e}")
 
-    # 2. WhiteBIT API
+    # 2. WhiteBIT API (для фиатных валют и доп. пар)
     try:
-        response = requests.get(WHITEBIT_API_URL, timeout=10).json()
+        response = requests.get(WHITEBIT_API_URL, timeout=5).json()
         # Прямой запрос (from_code_to_code)
         pair_key = f"{from_code}_{to_code}"
         if pair_key in response:
             rate = float(response[pair_key]['last_price'])
             if rate <= 0:
                 raise ValueError(f"Invalid WhiteBIT rate for {pair_key}: {rate}")
-            logger.info(f"WhiteBIT direct rate: {pair_key} = {rate}")
+            logger.info(f"WhiteBIT direct rate (real-time): {pair_key} = {rate}")
             redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
             return amount * rate, rate
         
@@ -267,20 +278,25 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
             if reverse_rate <= 0:
                 raise ValueError(f"Invalid WhiteBIT reverse rate for {reverse_pair_key}: {reverse_rate}")
             rate = 1 / reverse_rate
-            logger.info(f"WhiteBIT reverse rate: {reverse_pair_key} = {rate}")
+            logger.info(f"WhiteBIT reverse rate (real-time): {reverse_pair_key} = {rate}")
             redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
             return amount * rate, rate
         
-        # Расчёт через USDT
+        # Расчёт через USDT (from -> USDT -> to)
         rate_from_usdt = None
-        rate_to_usdt = None
+        rate_usdt_to = None
         
         # from → USDT
         if from_key != 'usdt':
             from_usdt_pair = f"{from_code}_USDT"
             if from_usdt_pair in response:
-                rate_from_usdt = float(response[from_usdt_pair]['last_price'])
+                rate_from_usdt = float(response[from_usdt_pair]['last_price'])  # Сколько USDT за 1 from_code
                 logger.debug(f"WhiteBIT {from_usdt_pair} = {rate_from_usdt}")
+            else:
+                usdt_from_pair = f"USDT_{from_code}"
+                if usdt_from_pair in response:
+                    rate_from_usdt = 1 / float(response[usdt_from_pair]['last_price'])
+                    logger.debug(f"WhiteBIT {usdt_from_pair} = {rate_from_usdt} (inverse)")
         else:
             rate_from_usdt = 1.0
         
@@ -288,42 +304,40 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
         if to_key != 'usdt':
             usdt_to_pair = f"USDT_{to_code}"
             if usdt_to_pair in response:
-                usdt_to_rate = float(response[usdt_to_pair]['last_price'])
-                rate_to_usdt = 1 / usdt_to_rate
-                logger.debug(f"WhiteBIT {usdt_to_pair} = {usdt_to_rate}, inverse = {rate_to_usdt}")
+                rate_usdt_to = 1 / float(response[usdt_to_pair]['last_price'])  # Сколько to_code за 1 USDT
+                logger.debug(f"WhiteBIT {usdt_to_pair} = {1/rate_usdt_to}, inverse = {rate_usdt_to}")
             else:
-                # Пробуем обратную пару (to_USDT)
                 to_usdt_pair = f"{to_code}_USDT"
                 if to_usdt_pair in response:
-                    rate_to_usdt = float(response[to_usdt_pair]['last_price'])
-                    logger.debug(f"WhiteBIT {to_usdt_pair} = {rate_to_usdt}")
+                    rate_usdt_to = float(response[to_usdt_pair]['last_price'])
+                    logger.debug(f"WhiteBIT {to_usdt_pair} = {rate_usdt_to}")
         else:
-            rate_to_usdt = 1.0
+            rate_usdt_to = 1.0
         
-        if rate_from_usdt and rate_to_usdt:
-            rate = rate_from_usdt * rate_to_usdt
+        if rate_from_usdt and rate_usdt_to:
+            rate = rate_from_usdt * rate_usdt_to  # from -> USDT -> to
             if rate <= 0:
                 raise ValueError(f"Invalid WhiteBIT calculated rate: {rate}")
-            logger.info(f"WhiteBIT rate via USDT: {from_key} to {to_key} = {rate}")
+            logger.info(f"WhiteBIT rate via USDT (real-time): {from_key} to {to_key} = {rate}")
             redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
             return amount * rate, rate
 
     except Exception as e:
         logger.warning(f"WhiteBIT API failed for {from_key} to {to_key}: {e}")
 
-    # Fallback для UAH
+    # Fallback (только при полной недоступности API)
     try:
         if from_key == 'uah' and to_key == 'usdt':
             rate = UAH_TO_USDT_FALLBACK
-            logger.info(f"Using fallback: {from_key} to {to_key} = {rate}")
+            logger.info(f"Using fallback (API unavailable): {from_key} to {to_key} = {rate}")
             redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
             return amount * rate, rate
         elif from_key == 'usdt' and to_key == 'uah':
             rate = USDT_TO_UAH_FALLBACK
-            logger.info(f"Using fallback: {from_key} to {to_key} = {rate}")
+            logger.info(f"Using fallback (API unavailable): {from_key} to {to_key} = {rate}")
             redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
             return amount * rate, rate
-        logger.error(f"No rate found for {from_key} to {to_key}")
+        logger.error(f"No real-time rate found for {from_key} to {to_key}")
         return None, "Курс недоступен: данные отсутствуют"
     except Exception as e:
         logger.error(f"Fallback error: {e}")
@@ -336,7 +350,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_stats(user_id, "start")
     logger.info(f"User {user_id} started bot")
     await update.message.reply_text(
-        'Привет! Я бот для конвертации валют.\n'
+        'Привет! Я бот для конвертации валют в реальном времени.\n'
         'Просто напиши коды валют, например: "usd btc" или "100 uah usdt".\n'
         f'Бесплатно: {FREE_REQUEST_LIMIT} запросов в сутки.\n'
         f'Безлимит: /subscribe за {SUBSCRIPTION_PRICE} USDT.\n'
