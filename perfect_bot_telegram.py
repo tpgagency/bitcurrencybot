@@ -174,14 +174,14 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
     try:
         # Прямой запрос
         url = f"https://api.coingecko.com/api/v3/simple/price?ids={from_id}&vs_currencies={to_code}"
-        logger.debug(f"Fetching: {url}")
+        logger.debug(f"Fetching direct: {url}")
         response = requests.get(url, timeout=15).json()
-        logger.info(f"Response: {json.dumps(response)}")
+        logger.info(f"Direct response: {json.dumps(response)}")
         
         if from_id in response and to_code in response[from_id]:
             rate = response[from_id][to_code]
             if rate <= 0:
-                logger.error(f"Invalid rate: {rate}")
+                logger.error(f"Invalid direct rate: {rate}")
                 return None, "Курс недоступен (нулевое значение)"
             redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
             return amount * rate, rate
@@ -235,7 +235,43 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
                         return None, "Курс недоступен (нулевое значение)"
                 else:
                     logger.error(f"No rate found for USD to {to_id}")
-                    return None, "Курс недоступен: данные отсутствуют"
+                    # Попробуем получить курс EUR → USD для резервного варианта
+                    url_eur_usd = f"https://api.coingecko.com/api/v3/simple/price?ids=eur&vs_currencies=usd"
+                    response_eur_usd = requests.get(url_eur_usd, timeout=15).json()
+                    logger.info(f"EUR to USD response: {json.dumps(response_eur_usd)}")
+                    
+                    if 'eur' in response_eur_usd and 'usd' in response_eur_usd['eur']:
+                        eur_to_usd = response_eur_usd['eur']['usd']
+                        if eur_to_usd <= 0:
+                            logger.error(f"Invalid rate from EUR to USD: {eur_to_usd}")
+                            return None, "Курс недоступен (нулевое значение)"
+                        # Если from_key = UAH, вычисляем UAH → EUR через UAH → USD → EUR
+                        if from_key == 'uah':
+                            uah_to_usd_url = f"https://api.coingecko.com/api/v3/simple/price?ids=uah&vs_currencies=usd"
+                            response_uah_usd = requests.get(uah_to_usd_url, timeout=15).json()
+                            logger.info(f"UAH to USD response: {json.dumps(response_uah_usd)}")
+                            
+                            if 'uah' in response_uah_usd and 'usd' in response_uah_usd['uah']:
+                                uah_to_usd = response_uah_usd['uah']['usd']
+                                if uah_to_usd <= 0:
+                                    logger.error(f"Invalid rate from UAH to USD: {uah_to_usd}")
+                                    return None, "Курс недоступен (нулевое значение)"
+                                # Итоговый курс: (1 / uah_to_usd) * (1 / eur_to_usd)
+                                final_rate = (1 / uah_to_usd) * (1 / eur_to_usd)
+                                if final_rate <= 0:
+                                    logger.error(f"Invalid final rate: {final_rate}")
+                                    return None, "Курс недоступен (нулевое значение)"
+                                redis_client.setex(cache_key, CACHE_TIMEOUT, final_rate)
+                                return amount * final_rate, final_rate
+                            else:
+                                logger.error(f"No rate found for UAH to USD")
+                                return None, "Курс недоступен: данные отсутствуют"
+                        else:
+                            logger.error(f"No valid path for {from_key} to {to_key}")
+                            return None, "Курс недоступен: данные отсутствуют"
+                    else:
+                        logger.error(f"No rate found for EUR to USD")
+                        return None, "Курс недоступен: данные отсутствуют"
             
             # Вычисляем итоговый курс: (1 / rate_from_usd) * rate_to_target
             final_rate = (1 / rate_from_usd) * rate_to_target
