@@ -3,6 +3,7 @@ import json
 import time
 import logging
 import requests
+import asyncio
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 import redis
@@ -457,32 +458,33 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 # Запуск
-application = Application.builder().token(TELEGRAM_TOKEN).build()
-
-# Установить команды бота
-application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("currencies", currencies))
-application.add_handler(CommandHandler("alert", alert))
-application.add_handler(CommandHandler("stats", stats))
-application.add_handler(CommandHandler("subscribe", subscribe))
-application.add_handler(CommandHandler("referrals", referrals))
-application.add_handler(CommandHandler("help", start))
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-application.add_handler(CallbackQueryHandler(button))
-application.job_queue.run_repeating(check_payment_job, interval=60)
-application.job_queue.run_repeating(check_alerts_job, interval=60)
-
-# Установить меню бота
 if __name__ == "__main__":
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    # Установить команды бота
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("currencies", currencies))
+    application.add_handler(CommandHandler("alert", alert))
+    application.add_handler(CommandHandler("stats", stats))
+    application.add_handler(CommandHandler("subscribe", subscribe))
+    application.add_handler(CommandHandler("referrals", referrals))
+    application.add_handler(CommandHandler("help", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(CallbackQueryHandler(button))
+    application.job_queue.run_repeating(check_payment_job, interval=60)
+    application.job_queue.run_repeating(check_alerts_job, interval=60)
+
+    # Установить меню бота
     if not redis_client.exists('stats'):
         redis_client.set('stats', json.dumps({"users": {}, "total_requests": 0, "request_types": {}, "subscriptions": {}, "revenue": 0.0}))
     logger.info("Bot starting...")
     try:
-        # Установить команды перед запуском
-        import asyncio
-        asyncio.run(set_bot_commands(application))
-        application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+        # Запустить приложение в асинхронном цикле
+        asyncio.run(
+            set_bot_commands(application)  # Установить команды
+            or application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+        )
     except NetworkError as e:
         logger.error(f"Network error on start: {e}")
         time.sleep(5)
-        application.run_polling()
+        asyncio.run(application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True))
