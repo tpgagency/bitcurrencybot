@@ -4,7 +4,7 @@ import time
 import logging
 import requests
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 import redis
 from telegram.error import NetworkError, RetryAfter, TelegramError
 from collections import deque
