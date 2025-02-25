@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CRYPTO_PAY_TOKEN = os.getenv('CRYPTO_PAY_TOKEN')
 REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
-CHANNEL_USERNAME = "@tpgbit"  # Username твоего канала
+CHANNEL_USERNAME = "@tpgbit"  # Твой канал
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True, ssl_cert_reqs="none")
 
 if not TELEGRAM_TOKEN:
@@ -26,11 +26,11 @@ if not CRYPTO_PAY_TOKEN:
     logger.error("CRYPTO_PAY_TOKEN not set")
     exit(1)
 
-AD_MESSAGE = f"\n\n📢 Подпишись на {CHANNEL_USERNAME} для новостей о крипте!"
+AD_MESSAGE = "\n\n📢 Подпишись на @tpgbit для новостей о крипте!"  # "Подпишись" остаётся с большой буквы
 FREE_REQUEST_LIMIT = 5
 SUBSCRIPTION_PRICE = 5
 CACHE_TIMEOUT = 120
-ADMIN_ID = "1058875848"  # Твой ID
+ADMIN_IDS = ["1058875848", "6403305626"]  # Твой ID и ID друга
 
 # Словари валют
 CURRENCIES = {
@@ -42,7 +42,7 @@ CURRENCIES = {
     'юань': {'id': 'cny', 'code': 'CNY'}, 'юани': {'id': 'cny', 'code': 'CNY'}, 'cny': {'id': 'cny', 'code': 'CNY'},
     'фунт': {'id': 'gbp', 'code': 'GBP'}, 'фунты': {'id': 'gbp', 'code': 'GBP'}, 'gbp': {'id': 'gbp', 'code': 'GBP'},
     'биткоин': {'id': 'bitcoin', 'code': 'BTC'}, 'биткоины': {'id': 'bitcoin', 'code': 'BTC'}, 'биткоина': {'id': 'bitcoin', 'code': 'BTC'}, 'btc': {'id': 'bitcoin', 'code': 'BTC'},
-    'эфир': {'id': 'ethereum', 'code': 'ETH'}, 'эфириум': {'id': 'ethereum', 'code': 'ETH'}, 'эфира': {'id': 'ethereum', 'code': 'ETH'}, 'eth': {'id': 'ethereum', 'code': 'ETH'},
+    'эфир': {'id': 'ethereum', 'code': 'ETH'}, 'эфириум': {'id': 'ethereum', 'code': 'ETH'}, 'эфира': {'id': 'ethereum', 'code': 'ETH'}, 'эфиру': {'id': 'ethereum', 'code': 'ETH'}, 'eth': {'id': 'ethereum', 'code': 'ETH'},
     'рипл': {'id': 'ripple', 'code': 'XRP'}, 'риплы': {'id': 'ripple', 'code': 'XRP'}, 'xrp': {'id': 'ripple', 'code': 'XRP'},
     'догекоин': {'id': 'dogecoin', 'code': 'DOGE'}, 'доге': {'id': 'dogecoin', 'code': 'DOGE'}, 'догекоина': {'id': 'dogecoin', 'code': 'DOGE'}, 'doge': {'id': 'dogecoin', 'code': 'DOGE'},
     'кардано': {'id': 'cardano', 'code': 'ADA'}, 'карданы': {'id': 'cardano', 'code': 'ADA'}, 'ada': {'id': 'cardano', 'code': 'ADA'},
@@ -56,14 +56,14 @@ async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE)
         chat_member = await context.bot.get_chat_member(CHANNEL_USERNAME, user_id)
         status = chat_member.status
         if status in ['member', 'administrator', 'creator']:
-            logger.debug(f"User {user_id} is subscribed to {CHANNEL_USERNAME}")
+            logger.debug(f"User {user_id} is subscribed to @tpgbit")
             return True
-        logger.debug(f"User {user_id} is not subscribed to {CHANNEL_USERNAME}, status: {status}")
+        logger.debug(f"User {user_id} is not subscribed to @tpgbit, status: {status}")
         return False
     except TelegramError as e:
         logger.error(f"Error checking subscription for {user_id}: {e}")
         await update.message.reply_text(
-            "Не могу проверить подписку. Убедись, что бот — админ в канале @tpgbit, и попробуй снова."
+            "Не могу проверить подписку. Убедись, что бот — админ в @tpgbit, и попробуй снова."
         )
         return False
 
@@ -71,7 +71,7 @@ async def enforce_subscription(update: Update, context: ContextTypes.DEFAULT_TYP
     if await check_subscription(update, context):
         return True
     await update.message.reply_text(
-        f"Чтобы пользоваться ботом, подпишись на {CHANNEL_USERNAME}!\n"
+        "Чтобы пользоваться ботом, подпишись на @tpgbit!\n"
         "После подписки повтори команду."
     )
     return False
@@ -101,7 +101,7 @@ def save_stats(user_id, request_type):
 
 def check_limit(user_id):
     try:
-        if user_id == ADMIN_ID:
+        if user_id in ADMIN_IDS:
             logger.debug(f"Admin {user_id} - unlimited access")
             return True, "∞"
         
@@ -289,7 +289,7 @@ async def kurs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if result:
             from_code = CURRENCIES[from_currency.lower()]['code']
             to_code = CURRENCIES[to_currency.lower()]['code']
-            remaining_display = "∞" if user_id == ADMIN_ID or json.loads(redis_client.get('stats') or '{}').get("subscriptions", {}).get(user_id, False) else remaining
+            remaining_display = "∞" if user_id in ADMIN_IDS or json.loads(redis_client.get('stats') or '{}').get("subscriptions", {}).get(user_id, False) else remaining
             await update.message.reply_text(
                 f"{amount} {from_code} = {result:.6f} {to_code}\n"
                 f"Курс: 1 {from_code} = {rate:.6f} {to_code}\n"
@@ -332,7 +332,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if result:
             from_code = CURRENCIES[from_currency.lower()]['code']
             to_code = CURRENCIES[to_currency.lower()]['code']
-            remaining_display = "∞" if user_id == ADMIN_ID or json.loads(redis_client.get('stats') or '{}').get("subscriptions", {}).get(user_id, False) else remaining
+            remaining_display = "∞" if user_id in ADMIN_IDS or json.loads(redis_client.get('stats') or '{}').get("subscriptions", {}).get(user_id, False) else remaining
             await update.message.reply_text(
                 f"{amount} {from_code} = {result:.6f} {to_code}\n"
                 f"Курс: 1 {from_code} = {rate:.6f} {to_code}\n"
