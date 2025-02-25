@@ -31,6 +31,7 @@ FREE_REQUEST_LIMIT = 5
 SUBSCRIPTION_PRICE = 5
 CACHE_TIMEOUT = 120
 ADMIN_IDS = ["1058875848", "6403305626"]
+BOT_USERNAME = "BitCurrencyBot"  # Замени на имя твоего бота
 
 CURRENCIES = {
     'usd': {'id': 'usd', 'code': 'USD'},
@@ -57,7 +58,7 @@ CURRENCIES = {
 }
 
 async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    user_id = update.message.from_user.id
+    user_id = update.message.from_user.id if update.message else update.callback_query.from_user.id
     try:
         chat_member = await context.bot.get_chat_member(CHANNEL_USERNAME, user_id)
         status = chat_member.status
@@ -68,18 +69,29 @@ async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return False
     except TelegramError as e:
         logger.error(f"Error checking subscription for {user_id}: {e}")
-        await update.message.reply_text(
-            "Не могу проверить подписку. Убедись, что бот — админ в @tpgbit, и попробуй снова."
-        )
+        if update.message:
+            await update.message.reply_text(
+                "Не могу проверить подписку. Убедись, что бот — админ в @tpgbit, и попробуй снова."
+            )
+        else:
+            await update.callback_query.edit_message_text(
+                "Не могу проверить подписку. Убедись, что бот — админ в @tpgbit, и попробуй снова."
+            )
         return False
 
 async def enforce_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if await check_subscription(update, context):
         return True
-    await update.message.reply_text(
-        "Чтобы пользоваться ботом, подпишись на @tpgbit!\n"
-        "После подписки повтори запрос."
-    )
+    if update.message:
+        await update.message.reply_text(
+            "Чтобы пользоваться ботом, подпишись на @tpgbit!\n"
+            "После подписки повтори запрос."
+        )
+    else:
+        await update.callback_query.edit_message_text(
+            "Чтобы пользоваться ботом, подпишись на @tpgbit!\n"
+            "После подписки повтори запрос."
+        )
     return False
 
 def save_stats(user_id, request_type):
@@ -145,7 +157,7 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
     
     from_id = from_data['id']
     to_id = to_data['id']
-    to_code = to_data['code'].lower()  # Используем код валюты для ответа API
+    to_code = to_data['code'].lower()
     
     try:
         url = f"https://api.coingecko.com/api/v3/simple/price?ids={from_id}&vs_currencies={to_code}"
@@ -161,7 +173,6 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
             redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
             return amount * rate, rate
         
-        # Пробуем обратный курс
         url_reverse = f"https://api.coingecko.com/api/v3/simple/price?ids={to_id}&vs_currencies={from_key}"
         logger.debug(f"Fetching reverse: {url_reverse}")
         response_reverse = requests.get(url_reverse, timeout=15).json()
@@ -187,12 +198,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
     save_stats(user_id, "start")
     logger.info(f"User {user_id} started bot")
+    keyboard = [
+        [InlineKeyboardButton("Конвертер", callback_data="converter")],
+        [InlineKeyboardButton("Текущая цена", callback_data="price")],
+        [InlineKeyboardButton("Статистика", callback_data="stats")],
+        [InlineKeyboardButton("Рефералы", callback_data="referrals")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
         'Привет! Я бот для конвертации валют.\n'
-        'Просто напиши коды валют, например: "usd btc" или "100 uah usdt".\n'
-        f'Бесплатно: {FREE_REQUEST_LIMIT} запросов в сутки.\n'
-        f'Безлимит: /subscribe за {SUBSCRIPTION_PRICE} USDT.\n'
-        'Для списка валют используй /currencies.'
+        'Выбери функцию в меню ниже:',
+        reply_markup=reply_markup
     )
 
 async def currencies(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -223,13 +239,14 @@ async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
-    if user_id not in ADMIN_IDS:
-        return
     stats = json.loads(redis_client.get('stats') or '{}')
     users = len(stats.get("users", {}))
     requests = stats.get("total_requests", 0)
     revenue = stats.get("revenue", 0.0)
-    await update.message.reply_text(f"Пользователей: {users}\nЗапросов: {requests}\nДоход: {revenue} USDT")
+    if user_id in ADMIN_IDS:
+        await update.message.reply_text(f"Админ-статистика:\nПользователей: {users}\nЗапросов: {requests}\nДоход: {revenue} USDT")
+    else:
+        await update.message.reply_text(f"Твоя статистика:\nЗапросов сегодня: {stats.get('users', {}).get(user_id, {}).get('requests', 0)}")
 
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await enforce_subscription(update, context):
@@ -363,19 +380,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"Ошибка: {rate}")
     except Exception as e:
         logger.error(f"Message error for {user_id}: {e}")
-        await update.message.reply_text('Примеры: "usd btc" или "100 uah usdt"')
+        await update.message.reply_text('Примеры: "usd btc" или "100 uah usdt"\nИли используй меню через /start')
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    text = query.data.lower()
     user_id = str(query.from_user.id)
     
-    if not await check_subscription(update, context):
-        await query.edit_message_text(
-            "Чтобы пользоваться ботом, подпишись на @tpgbit!\n"
-            "После подписки повтори запрос."
-        )
+    if not await enforce_subscription(update, context):
         return
     
     stats = json.loads(redis_client.get('stats') or '{}')
@@ -392,23 +404,32 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     context.user_data['last_request'] = time.time()
-    parts = text.split()
-    amount = 1
-    from_currency, to_currency = parts[0], parts[1]
-    
-    save_stats(user_id, f"{from_currency}_to_{to_currency}")
-    result, rate = get_exchange_rate(from_currency, to_currency, amount)
-    if result:
-        from_code = CURRENCIES[from_currency]['code']
-        to_code = CURRENCIES[to_currency]['code']
-        remaining_display = "∞" if user_id in ADMIN_IDS or stats.get("subscriptions", {}).get(user_id, False) else remaining
+    action = query.data
+
+    if action == "converter":
         await query.edit_message_text(
-            f"{amount} {from_code} = {result:.6f} {to_code}\n"
-            f"Курс: 1 {from_code} = {rate:.6f} {to_code}\n"
-            f"Осталось запросов: {remaining_display}{AD_MESSAGE}"
+            "Введи сумму и валюты для конвертации, например: \"100 uah usdt\""
         )
-    else:
-        await query.edit_message_text(f"Ошибка: {rate}")
+    elif action == "price":
+        await query.edit_message_text(
+            "Введи валюту для проверки текущей цены, например: \"btc usd\""
+        )
+    elif action == "stats":
+        users = len(stats.get("users", {}))
+        requests = stats.get("total_requests", 0)
+        revenue = stats.get("revenue", 0.0)
+        if user_id in ADMIN_IDS:
+            await query.edit_message_text(f"Админ-статистика:\nПользователей: {users}\nЗапросов: {requests}\nДоход: {revenue} USDT")
+        else:
+            await query.edit_message_text(f"Твоя статистика:\nЗапросов сегодня: {stats.get('users', {}).get(user_id, {}).get('requests', 0)}")
+    elif action == "referrals":
+        ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{user_id}"
+        refs = len(json.loads(redis_client.get(f"referrals:{user_id}") or '[]'))
+        await query.edit_message_text(
+            f"Твоя реферальная ссылка: {ref_link}\n"
+            f"Приглашено пользователей: {refs}\n"
+            "Приглашай друзей и получай бонусы (скоро будет доступно)!"
+        )
 
 # Запуск
 application = Application.builder().token(TELEGRAM_TOKEN).build()
