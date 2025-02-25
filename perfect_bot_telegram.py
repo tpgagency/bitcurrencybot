@@ -32,7 +32,7 @@ SUBSCRIPTION_PRICE = 5
 CACHE_TIMEOUT = 120
 ADMIN_IDS = ["1058875848", "6403305626"]  # Твой ID и ID друга
 
-# Словари валют (только коды)
+# Словари валют (расширенный список)
 CURRENCIES = {
     'usd': {'id': 'usd', 'code': 'USD'},
     'uah': {'id': 'uah', 'code': 'UAH'},
@@ -41,6 +41,8 @@ CURRENCIES = {
     'jpy': {'id': 'jpy', 'code': 'JPY'},
     'cny': {'id': 'cny', 'code': 'CNY'},
     'gbp': {'id': 'gbp', 'code': 'GBP'},
+    'kzt': {'id': 'kzt', 'code': 'KZT'},  # Тенге
+    'try': {'id': 'try', 'code': 'TRY'},  # Турецкая лира
     'btc': {'id': 'bitcoin', 'code': 'BTC'},
     'eth': {'id': 'ethereum', 'code': 'ETH'},
     'xrp': {'id': 'ripple', 'code': 'XRP'},
@@ -48,7 +50,11 @@ CURRENCIES = {
     'ada': {'id': 'cardano', 'code': 'ADA'},
     'sol': {'id': 'solana', 'code': 'SOL'},
     'ltc': {'id': 'litecoin', 'code': 'LTC'},
-    'usdt': {'id': 'tether', 'code': 'USDT'}
+    'usdt': {'id': 'tether', 'code': 'USDT'},
+    'bnb': {'id': 'binancecoin', 'code': 'BNB'},  # Binance Coin
+    'trx': {'id': 'tron', 'code': 'TRX'},  # Tron
+    'dot': {'id': 'polkadot', 'code': 'DOT'},  # Polkadot
+    'matic': {'id': 'matic-network', 'code': 'MATIC'}  # Polygon
 }
 
 async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -182,12 +188,56 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
     save_stats(user_id, "start")
     logger.info(f"User {user_id} started bot")
+    keyboard = [
+        [InlineKeyboardButton("USD → BTC", callback_data="usd btc")],
+        [InlineKeyboardButton("ETH → USDT", callback_data="eth usdt")],
+        [InlineKeyboardButton("UAH → USDT", callback_data="uah usdt")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
         'Привет! Я бот для конвертации валют.\n'
         'Просто напиши коды валют, например: "usd btc" или "100 uah usdt".\n'
         f'Бесплатно: {FREE_REQUEST_LIMIT} запросов в сутки.\n'
-        f'Безлимит: /subscribe за {SUBSCRIPTION_PRICE} USDT.'
+        f'Безлимит: /subscribe за {SUBSCRIPTION_PRICE} USDT.\n'
+        'Попробуй популярные пары ниже или /currencies для списка валют.',
+        reply_markup=reply_markup
     )
+
+async def currencies(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await enforce_subscription(update, context):
+        return
+    currency_list = ", ".join(sorted(CURRENCIES.keys()))
+    await update.message.reply_text(f"Поддерживаемые валюты: {currency_list}")
+
+async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await enforce_subscription(update, context):
+        return
+    
+    user_id = str(update.message.from_user.id)
+    args = context.args
+    if len(args) != 3 or not args[2].replace('.', '', 1).isdigit():
+        await update.message.reply_text('Пример: /alert usd btc 0.000015')
+        return
+    
+    from_currency, to_currency, target_rate = args[0].lower(), args[1].lower(), float(args[2])
+    if from_currency not in CURRENCIES or to_currency not in CURRENCIES:
+        await update.message.reply_text("Ошибка: одна из валют не поддерживается")
+        return
+    
+    alerts = json.loads(redis_client.get(f"alerts:{user_id}") or '[]')
+    alerts.append({"from": from_currency, "to": to_currency, "target": target_rate})
+    redis_client.set(f"alerts:{user_id}", json.dumps(alerts))
+    await update.message.reply_text(f"Уведомление установлено: {from_currency} → {to_currency} при курсе {target_rate}")
+
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    if user_id not in ADMIN_IDS:
+        return
+    stats = json.loads(redis_client.get('stats') or '{}')
+    users = len(stats.get("users", {}))
+    requests = stats.get("total_requests", 0)
+    revenue = stats.get("revenue", 0.0)
+    await update.message.reply_text(f"Пользователей: {users}\nЗапросов: {requests}\nДоход: {revenue} USDT")
 
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await enforce_subscription(update, context):
@@ -250,13 +300,38 @@ async def check_payment_job(context: ContextTypes.DEFAULT_TYPE):
         except requests.RequestException as e:
             logger.error(f"Payment check error for {user_id}: {e}")
 
+async def check_alerts_job(context: ContextTypes.DEFAULT_TYPE):
+    stats = json.loads(redis_client.get('stats') or '{}')
+    for user_id in stats.get("users", {}):
+        alerts = json.loads(redis_client.get(f"alerts:{user_id}") or '[]')
+        if not alerts:
+            continue
+        updated_alerts = []
+        for alert in alerts:
+            from_currency, to_currency, target_rate = alert["from"], alert["to"], alert["target"]
+            result, current_rate = get_exchange_rate(from_currency, to_currency)
+            if result and current_rate <= target_rate:
+                from_code = CURRENCIES[from_currency]['code']
+                to_code = CURRENCIES[to_currency]['code']
+                await context.bot.send_message(
+                    user_id,
+                    f"Уведомление! Курс {from_code} → {to_code} достиг {current_rate:.6f} (цель: {target_rate})"
+                )
+            else:
+                updated_alerts.append(alert)
+        redis_client.set(f"alerts:{user_id}", json.dumps(updated_alerts))
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await enforce_subscription(update, context):
         return
     
     user_id = str(update.message.from_user.id)
-    if 'last_request' in context.user_data and time.time() - context.user_data['last_request'] < 1:
-        await update.message.reply_text("Подожди секунду!")
+    stats = json.loads(redis_client.get('stats') or '{}')
+    is_subscribed = user_id in ADMIN_IDS or stats.get("subscriptions", {}).get(user_id, False)
+    delay = 1 if is_subscribed else 5  # 1 сек для админов/подписчиков, 5 сек для остальных
+    
+    if 'last_request' in context.user_data and time.time() - context.user_data['last_request'] < delay:
+        await update.message.reply_text(f"Подожди {delay} секунд{'у' if delay == 1 else ''}!")
         return
     
     can_proceed, remaining = check_limit(user_id)
@@ -284,7 +359,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if result:
             from_code = CURRENCIES[from_currency.lower()]['code']
             to_code = CURRENCIES[to_currency.lower()]['code']
-            remaining_display = "∞" if user_id in ADMIN_IDS or json.loads(redis_client.get('stats') or '{}').get("subscriptions", {}).get(user_id, False) else remaining
+            remaining_display = "∞" if user_id in ADMIN_IDS or stats.get("subscriptions", {}).get(user_id, False) else remaining
             await update.message.reply_text(
                 f"{amount} {from_code} = {result:.6f} {to_code}\n"
                 f"Курс: 1 {from_code} = {rate:.6f} {to_code}\n"
@@ -296,12 +371,62 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Message error for {user_id}: {e}")
         await update.message.reply_text('Примеры: "usd btc" или "100 uah usdt"')
 
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    text = query.data.lower()
+    user_id = str(query.from_user.id)
+    
+    if not await check_subscription(update, context):
+        await query.edit_message_text(
+            "Чтобы пользоваться ботом, подпишись на @tpgbit!\n"
+            "После подписки повтори запрос."
+        )
+        return
+    
+    stats = json.loads(redis_client.get('stats') or '{}')
+    is_subscribed = user_id in ADMIN_IDS or stats.get("subscriptions", {}).get(user_id, False)
+    delay = 1 if is_subscribed else 5
+    
+    if 'last_request' in context.user_data and time.time() - context.user_data['last_request'] < delay:
+        await query.edit_message_text(f"Подожди {delay} секунд{'у' if delay == 1 else ''}!")
+        return
+    
+    can_proceed, remaining = check_limit(user_id)
+    if not can_proceed:
+        await query.edit_message_text(f"Лимит {FREE_REQUEST_LIMIT} запросов исчерпан. Подпишись: /subscribe")
+        return
+    
+    context.user_data['last_request'] = time.time()
+    parts = text.split()
+    amount = 1
+    from_currency, to_currency = parts[0], parts[1]
+    
+    save_stats(user_id, f"{from_currency}_to_{to_currency}")
+    result, rate = get_exchange_rate(from_currency, to_currency, amount)
+    if result:
+        from_code = CURRENCIES[from_currency]['code']
+        to_code = CURRENCIES[to_currency]['code']
+        remaining_display = "∞" if user_id in ADMIN_IDS or stats.get("subscriptions", {}).get(user_id, False) else remaining
+        await query.edit_message_text(
+            f"{amount} {from_code} = {result:.6f} {to_code}\n"
+            f"Курс: 1 {from_code} = {rate:.6f} {to_code}\n"
+            f"Осталось запросов: {remaining_display}{AD_MESSAGE}"
+        )
+    else:
+        await query.edit_message_text(f"Ошибка: {rate}")
+
 # Запуск
 application = Application.builder().token(TELEGRAM_TOKEN).build()
 application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("currencies", currencies))
+application.add_handler(CommandHandler("alert", alert))
+application.add_handler(CommandHandler("stats", stats))
 application.add_handler(CommandHandler("subscribe", subscribe))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+application.add_handler(CallbackQueryHandler(button))
 application.job_queue.run_repeating(check_payment_job, interval=60)
+application.job_queue.run_repeating(check_alerts_job, interval=60)
 
 if __name__ == "__main__":
     if not redis_client.exists('stats'):
