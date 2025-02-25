@@ -30,9 +30,8 @@ AD_MESSAGE = "\n\n📢 Подпишись на @tpgbit для новостей �
 FREE_REQUEST_LIMIT = 5
 SUBSCRIPTION_PRICE = 5
 CACHE_TIMEOUT = 120
-ADMIN_IDS = ["1058875848", "6403305626"]  # Твой ID и ID друга
+ADMIN_IDS = ["1058875848", "6403305626"]
 
-# Словари валют (расширенный список)
 CURRENCIES = {
     'usd': {'id': 'usd', 'code': 'USD'},
     'uah': {'id': 'uah', 'code': 'UAH'},
@@ -41,8 +40,8 @@ CURRENCIES = {
     'jpy': {'id': 'jpy', 'code': 'JPY'},
     'cny': {'id': 'cny', 'code': 'CNY'},
     'gbp': {'id': 'gbp', 'code': 'GBP'},
-    'kzt': {'id': 'kzt', 'code': 'KZT'},  # Тенге
-    'try': {'id': 'try', 'code': 'TRY'},  # Турецкая лира
+    'kzt': {'id': 'kzt', 'code': 'KZT'},
+    'try': {'id': 'try', 'code': 'TRY'},
     'btc': {'id': 'bitcoin', 'code': 'BTC'},
     'eth': {'id': 'ethereum', 'code': 'ETH'},
     'xrp': {'id': 'ripple', 'code': 'XRP'},
@@ -51,10 +50,10 @@ CURRENCIES = {
     'sol': {'id': 'solana', 'code': 'SOL'},
     'ltc': {'id': 'litecoin', 'code': 'LTC'},
     'usdt': {'id': 'tether', 'code': 'USDT'},
-    'bnb': {'id': 'binancecoin', 'code': 'BNB'},  # Binance Coin
-    'trx': {'id': 'tron', 'code': 'TRX'},  # Tron
-    'dot': {'id': 'polkadot', 'code': 'DOT'},  # Polkadot
-    'matic': {'id': 'matic-network', 'code': 'MATIC'}  # Polygon
+    'bnb': {'id': 'binancecoin', 'code': 'BNB'},
+    'trx': {'id': 'tron', 'code': 'TRX'},
+    'dot': {'id': 'polkadot', 'code': 'DOT'},
+    'matic': {'id': 'matic-network', 'code': 'MATIC'}
 }
 
 async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -161,7 +160,6 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
             redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
             return amount * rate, rate
         
-        # Пробуем обратный курс
         url_reverse = f"https://api.coingecko.com/api/v3/simple/price?ids={to_id}&vs_currencies={from_id}"
         logger.debug(f"Fetching reverse: {url_reverse}")
         response_reverse = requests.get(url_reverse, timeout=15).json()
@@ -182,26 +180,8 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
         return None, f"Ошибка API: {str(e)}"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await enforce_subscription(update, context):
-        return
-    
     user_id = str(update.message.from_user.id)
-    save_stats(user_id, "start")
-    logger.info(f"User {user_id} started bot")
-    keyboard = [
-        [InlineKeyboardButton("USD → BTC", callback_data="usd btc")],
-        [InlineKeyboardButton("ETH → USDT", callback_data="eth usdt")],
-        [InlineKeyboardButton("UAH → USDT", callback_data="uah usdt")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
-        'Привет! Я бот для конвертации валют.\n'
-        'Просто напиши коды валют, например: "usd btc" или "100 uah usdt".\n'
-        f'Бесплатно: {FREE_REQUEST_LIMIT} запросов в сутки.\n'
-        f'Безлимит: /subscribe за {SUBSCRIPTION_PRICE} USDT.\n'
-        'Попробуй популярные пары ниже или /currencies для списка валют.',
-        reply_markup=reply_markup
-    )
+    await update.message.reply_text(f"Привет, {user_id}! Я бот для конвертации валют.")
 
 async def currencies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await enforce_subscription(update, context):
@@ -328,7 +308,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
     stats = json.loads(redis_client.get('stats') or '{}')
     is_subscribed = user_id in ADMIN_IDS or stats.get("subscriptions", {}).get(user_id, False)
-    delay = 1 if is_subscribed else 5  # 1 сек для админов/подписчиков, 5 сек для остальных
+    delay = 1 if is_subscribed else 5
     
     if 'last_request' in context.user_data and time.time() - context.user_data['last_request'] < delay:
         await update.message.reply_text(f"Подожди {delay} секунд{'у' if delay == 1 else ''}!")
