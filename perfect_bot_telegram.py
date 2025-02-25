@@ -58,7 +58,7 @@ CURRENCIES = {
 }
 
 # Фиксированный курс UAH → USD (пример, обновляй регулярно)
-UAH_TO_USD_FALLBACK = 0.025  # 1 UAH ≈ 0.025 USD (пример, проверь актуальный курс)
+UAH_TO_USD_FALLBACK = 0.025  # 1 UAH ≈ 0.025 USD (проверь актуальный курс)
 
 async def set_bot_commands(application: Application):
     commands = [
