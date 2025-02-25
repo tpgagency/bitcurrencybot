@@ -64,8 +64,8 @@ async def set_bot_commands(application: Application):
         ("stats", "Статистика"),
         ("subscribe", "Подписка"),
         ("alert", "Уведомления"),
-        ("referrals", "Рефералы"),
-        ("help", "Меню")
+        ("referrals", "Рефералы")
+        # Убрал /help, оставив только /start как основную команду для меню
     ]
     bot = application.bot
     await bot.set_my_commands(commands)
@@ -206,8 +206,19 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
         return None, f"Ошибка API: {str(e)}"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await enforce_subscription(update, context):
+        return
     user_id = str(update.message.from_user.id)
-    await update.message.reply_text(f"Привет, {user_id}! Я бот для конвертации валют.")
+    save_stats(user_id, "start")
+    logger.info(f"User {user_id} started bot")
+    await update.message.reply_text(
+        'Привет! Я бот для конвертации валют.\n'
+        'Просто напиши коды валют, например: "usd btc" или "100 uah usdt".\n'
+        f'Бесплатно: {FREE_REQUEST_LIMIT} запросов в сутки.\n'
+        f'Безлимит: /subscribe за {SUBSCRIPTION_PRICE} USDT.\n'
+        'Для списка валют используй /currencies.\n'
+        'Выбери команду в меню Telegram (внизу слева).'
+    )
 
 async def currencies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await enforce_subscription(update, context):
@@ -467,7 +478,6 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("stats", stats))
     application.add_handler(CommandHandler("subscribe", subscribe))
     application.add_handler(CommandHandler("referrals", referrals))
-    application.add_handler(CommandHandler("help", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(button))
     application.job_queue.run_repeating(check_payment_job, interval=60)
