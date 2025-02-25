@@ -185,19 +185,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.message.from_user.id)
     save_stats(user_id, "start")
     logger.info(f"User {user_id} started bot")
-    keyboard = [
-        [InlineKeyboardButton("USD → BTC", callback_data="usd btc")],
-        [InlineKeyboardButton("ETH → USDT", callback_data="eth usdt")],
-        [InlineKeyboardButton("UAH → USDT", callback_data="uah usdt")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
         'Привет! Я бот для конвертации валют.\n'
         'Просто напиши коды валют, например: "usd btc" или "100 uah usdt".\n'
         f'Бесплатно: {FREE_REQUEST_LIMIT} запросов в сутки.\n'
         f'Безлимит: /subscribe за {SUBSCRIPTION_PRICE} USDT.\n'
-        'Попробуй популярные пары ниже или /currencies для списка валют.',
-        reply_markup=reply_markup
+        'Для списка валют используй /currencies.'
     )
 
 async def currencies(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -356,7 +349,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_stats(user_id, f"{from_currency}_to_{to_currency}")
         result, rate = get_exchange_rate(from_currency, to_currency, amount)
         if result:
-            from_code = CURRENCIES[from_currency.lower()]['code']  # Исправлено CURENCIES на CURRENCIES
+            from_code = CURRENCIES[from_currency.lower()]['code']
             to_code = CURRENCIES[to_currency.lower()]['code']
             remaining_display = "∞" if user_id in ADMIN_IDS or stats.get("subscriptions", {}).get(user_id, False) else remaining
             await update.message.reply_text(
