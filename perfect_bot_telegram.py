@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CRYPTO_PAY_TOKEN = os.getenv('CRYPTO_PAY_TOKEN')
 REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
-CHANNEL_USERNAME = "@YourChannel"  # Замени на username твоего канала, например, @MyCryptoNews
+CHANNEL_USERNAME = "@tpgbit"  # Замени на username твоего канала, например, @MyCryptoNews
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True, ssl_cert_reqs="none")
 
 if not TELEGRAM_TOKEN:
@@ -26,7 +26,7 @@ if not CRYPTO_PAY_TOKEN:
     logger.error("CRYPTO_PAY_TOKEN not set")
     exit(1)
 
-AD_MESSAGE = f"\n\n📢 Реклама: Подпишись на {@tpgbit} для новостей о крипте!"
+AD_MESSAGE = f"\n\n📢 Реклама: Подпишись на "@tpgbit" для новостей о крипте!"
 FREE_REQUEST_LIMIT = 5
 SUBSCRIPTION_PRICE = 5
 CACHE_TIMEOUT = 120
@@ -68,7 +68,7 @@ async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def enforce_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     if not await check_subscription(update, context):
         await update.message.reply_text(
-            f"Чтобы пользоваться ботом, подпишись на {@tpgbit}!\n"
+            f"Чтобы пользоваться ботом, подпишись на {CHANNEL_USERNAME}!\n"
             f"После подписки повтори команду."
         )
         return False
