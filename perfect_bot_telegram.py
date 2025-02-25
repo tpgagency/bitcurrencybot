@@ -65,7 +65,6 @@ async def set_bot_commands(application: Application):
         ("subscribe", "Подписка"),
         ("alert", "Уведомления"),
         ("referrals", "Рефералы")
-        # Убрал /help, оставив только /start как основную команду для меню
     ]
     bot = application.bot
     await bot.set_my_commands(commands)
@@ -173,6 +172,7 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
     to_code = to_data['code'].lower()
     
     try:
+        # Прямой запрос
         url = f"https://api.coingecko.com/api/v3/simple/price?ids={from_id}&vs_currencies={to_code}"
         logger.debug(f"Fetching: {url}")
         response = requests.get(url, timeout=15).json()
@@ -186,6 +186,7 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
             redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
             return amount * rate, rate
         
+        # Обратный запрос
         url_reverse = f"https://api.coingecko.com/api/v3/simple/price?ids={to_id}&vs_currencies={from_key}"
         logger.debug(f"Fetching reverse: {url_reverse}")
         response_reverse = requests.get(url_reverse, timeout=15).json()
@@ -198,6 +199,45 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
                 return None, "Курс недоступен (нулевое значение)"
             redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
             return amount * rate, rate
+        
+        # Косвенный курс через USD для фиатных валют
+        if from_key in ['usd', 'uah', 'eur', 'rub', 'jpy', 'cny', 'gbp', 'kzt', 'try'] and to_key in ['usd', 'uah', 'eur', 'rub', 'jpy', 'cny', 'gbp', 'kzt', 'try']:
+            # Получаем курс от исходной валюты к USD
+            url_from_usd = f"https://api.coingecko.com/api/v3/simple/price?ids={from_id}&vs_currencies=usd"
+            response_from_usd = requests.get(url_from_usd, timeout=15).json()
+            logger.info(f"From USD response: {json.dumps(response_from_usd)}")
+            
+            if from_id in response_from_usd and 'usd' in response_from_usd[from_id]:
+                rate_from_usd = response_from_usd[from_id]['usd']
+                if rate_from_usd <= 0:
+                    logger.error(f"Invalid rate from {from_key} to USD: {rate_from_usd}")
+                    return None, "Курс недоступен (нулевое значение)"
+            else:
+                logger.error(f"No rate found for {from_id} to USD")
+                return None, "Курс недоступен: данные отсутствуют"
+            
+            # Получаем курс от USD к целевой валюте
+            url_to_usd = f"https://api.coingecko.com/api/v3/simple/price?ids=usd&vs_currencies={to_code}"
+            response_to_usd = requests.get(url_to_usd, timeout=15).json()
+            logger.info(f"To USD response: {json.dumps(response_to_usd)}")
+            
+            if 'usd' in response_to_usd and to_code in response_to_usd['usd']:
+                rate_to_target = response_to_usd['usd'][to_code]
+                if rate_to_target <= 0:
+                    logger.error(f"Invalid rate from USD to {to_key}: {rate_to_target}")
+                    return None, "Курс недоступен (нулевое значение)"
+            else:
+                logger.error(f"No rate found for USD to {to_id}")
+                return None, "Курс недоступен: данные отсутствуют"
+            
+            # Вычисляем итоговый курс: (1 / rate_from_usd) * rate_to_target
+            final_rate = (1 / rate_from_usd) * rate_to_target
+            if final_rate <= 0:
+                logger.error(f"Invalid final rate: {final_rate}")
+                return None, "Курс недоступен (нулевое значение)"
+            
+            redis_client.setex(cache_key, CACHE_TIMEOUT, final_rate)
+            return amount * final_rate, final_rate
         
         logger.error(f"No rate found for {from_id} to {to_id}")
         return None, "Курс недоступен: данные отсутствуют"
