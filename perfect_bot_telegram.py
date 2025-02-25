@@ -242,7 +242,7 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
                 to_usdt_pair = f"{to_code}USDT"
                 response_to_reverse = requests.get(f"{BINANCE_API_URL}?symbol={to_usdt_pair}", timeout=5).json()
                 if 'price' in response_to_reverse:
-                    rate_usdt_to = float(response_to_reverse['price'])
+                    rate_usdt_to = float(response_to_reverse['price'])  # Сколько USDT за 1 to_code
                     logger.debug(f"Binance {to_usdt_pair} = {rate_usdt_to}")
         else:
             rate_usdt_to = 1.0
@@ -309,7 +309,7 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
             else:
                 to_usdt_pair = f"{to_code}_USDT"
                 if to_usdt_pair in response:
-                    rate_usdt_to = float(response[to_usdt_pair]['last_price'])
+                    rate_usdt_to = float(response[to_usdt_pair]['last_price'])  # Сколько USDT за 1 to_code
                     logger.debug(f"WhiteBIT {to_usdt_pair} = {rate_usdt_to}")
         else:
             rate_usdt_to = 1.0
