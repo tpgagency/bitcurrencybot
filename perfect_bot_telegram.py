@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CRYPTO_PAY_TOKEN = os.getenv('CRYPTO_PAY_TOKEN')
 REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
-CHANNEL_USERNAME = "@tpgbit"  # Твой канал
+CHANNEL_USERNAME = "@tpgbit"
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True, ssl_cert_reqs="none")
 
 if not TELEGRAM_TOKEN:
@@ -32,23 +32,23 @@ SUBSCRIPTION_PRICE = 5
 CACHE_TIMEOUT = 120
 ADMIN_IDS = ["1058875848", "6403305626"]  # Твой ID и ID друга
 
-# Словари валют
+# Словари валют (только коды)
 CURRENCIES = {
-    'доллар': {'id': 'usd', 'code': 'USD'}, 'доллары': {'id': 'usd', 'code': 'USD'}, 'доллара': {'id': 'usd', 'code': 'USD'}, 'usd': {'id': 'usd', 'code': 'USD'},
-    'гривна': {'id': 'uah', 'code': 'UAH'}, 'гривны': {'id': 'uah', 'code': 'UAH'}, 'гривен': {'id': 'uah', 'code': 'UAH'}, 'uah': {'id': 'uah', 'code': 'UAH'},
-    'евро': {'id': 'eur', 'code': 'EUR'}, 'eur': {'id': 'eur', 'code': 'EUR'},
-    'рубль': {'id': 'rub', 'code': 'RUB'}, 'рубли': {'id': 'rub', 'code': 'RUB'}, 'рубля': {'id': 'rub', 'code': 'RUB'}, 'rub': {'id': 'rub', 'code': 'RUB'},
-    'йена': {'id': 'jpy', 'code': 'JPY'}, 'йены': {'id': 'jpy', 'code': 'JPY'}, 'jpy': {'id': 'jpy', 'code': 'JPY'},
-    'юань': {'id': 'cny', 'code': 'CNY'}, 'юани': {'id': 'cny', 'code': 'CNY'}, 'cny': {'id': 'cny', 'code': 'CNY'},
-    'фунт': {'id': 'gbp', 'code': 'GBP'}, 'фунты': {'id': 'gbp', 'code': 'GBP'}, 'gbp': {'id': 'gbp', 'code': 'GBP'},
-    'биткоин': {'id': 'bitcoin', 'code': 'BTC'}, 'биткоины': {'id': 'bitcoin', 'code': 'BTC'}, 'биткоина': {'id': 'bitcoin', 'code': 'BTC'}, 'btc': {'id': 'bitcoin', 'code': 'BTC'},
-    'эфир': {'id': 'ethereum', 'code': 'ETH'}, 'эфириум': {'id': 'ethereum', 'code': 'ETH'}, 'эфира': {'id': 'ethereum', 'code': 'ETH'}, 'эфиру': {'id': 'ethereum', 'code': 'ETH'}, 'eth': {'id': 'ethereum', 'code': 'ETH'},
-    'рипл': {'id': 'ripple', 'code': 'XRP'}, 'риплы': {'id': 'ripple', 'code': 'XRP'}, 'xrp': {'id': 'ripple', 'code': 'XRP'},
-    'догекоин': {'id': 'dogecoin', 'code': 'DOGE'}, 'доге': {'id': 'dogecoin', 'code': 'DOGE'}, 'догекоина': {'id': 'dogecoin', 'code': 'DOGE'}, 'doge': {'id': 'dogecoin', 'code': 'DOGE'},
-    'кардано': {'id': 'cardano', 'code': 'ADA'}, 'карданы': {'id': 'cardano', 'code': 'ADA'}, 'ada': {'id': 'cardano', 'code': 'ADA'},
-    'солана': {'id': 'solana', 'code': 'SOL'}, 'соланы': {'id': 'solana', 'code': 'SOL'}, 'sol': {'id': 'solana', 'code': 'SOL'},
-    'лайткоин': {'id': 'litecoin', 'code': 'LTC'}, 'лайткоины': {'id': 'litecoin', 'code': 'LTC'}, 'ltc': {'id': 'litecoin', 'code': 'LTC'},
-    'usdt': {'id': 'tether', 'code': 'USDT'}, 'тейзер': {'id': 'tether', 'code': 'USDT'}, 'тезер': {'id': 'tether', 'code': 'USDT'}  # Добавлен Tether
+    'usd': {'id': 'usd', 'code': 'USD'},
+    'uah': {'id': 'uah', 'code': 'UAH'},
+    'eur': {'id': 'eur', 'code': 'EUR'},
+    'rub': {'id': 'rub', 'code': 'RUB'},
+    'jpy': {'id': 'jpy', 'code': 'JPY'},
+    'cny': {'id': 'cny', 'code': 'CNY'},
+    'gbp': {'id': 'gbp', 'code': 'GBP'},
+    'btc': {'id': 'bitcoin', 'code': 'BTC'},
+    'eth': {'id': 'ethereum', 'code': 'ETH'},
+    'xrp': {'id': 'ripple', 'code': 'XRP'},
+    'doge': {'id': 'dogecoin', 'code': 'DOGE'},
+    'ada': {'id': 'cardano', 'code': 'ADA'},
+    'sol': {'id': 'solana', 'code': 'SOL'},
+    'ltc': {'id': 'litecoin', 'code': 'LTC'},
+    'usdt': {'id': 'tether', 'code': 'USDT'}
 }
 
 async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -73,7 +73,7 @@ async def enforce_subscription(update: Update, context: ContextTypes.DEFAULT_TYP
         return True
     await update.message.reply_text(
         "Чтобы пользоваться ботом, подпишись на @tpgbit!\n"
-        "После подписки повтори команду."
+        "После подписки повтори запрос."
     )
     return False
 
@@ -184,7 +184,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"User {user_id} started bot")
     await update.message.reply_text(
         'Привет! Я бот для конвертации валют.\n'
-        'Примеры: "/kurs usd btc" или "/kurs 44 доллара к эфиру".\n'
+        'Просто напиши коды валют, например: "usd btc" или "100 uah usdt".\n'
         f'Бесплатно: {FREE_REQUEST_LIMIT} запросов в сутки.\n'
         f'Безлимит: /subscribe за {SUBSCRIPTION_PRICE} USDT.'
     )
@@ -250,58 +250,6 @@ async def check_payment_job(context: ContextTypes.DEFAULT_TYPE):
         except requests.RequestException as e:
             logger.error(f"Payment check error for {user_id}: {e}")
 
-async def kurs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await enforce_subscription(update, context):
-        return
-    
-    user_id = str(update.message.from_user.id)
-    args = context.args
-    
-    can_proceed, remaining = check_limit(user_id)
-    if not can_proceed:
-        await update.message.reply_text(f"Лимит {FREE_REQUEST_LIMIT} запросов исчерпан. Подпишись: /subscribe")
-        return
-    
-    if not args:
-        await update.message.reply_text('Примеры: "/kurs usd btc" или "/kurs 44 доллара к эфиру"')
-        return
-    
-    text = " ".join(args).lower()
-    parts = text.split()
-    logger.info(f"Kurs request from {user_id}: {text}")
-    
-    try:
-        if 'к' in parts:
-            k_index = parts.index('к')
-            amount = float(parts[0]) if parts[0].replace('.', '', 1).isdigit() else 1
-            from_currency = parts[k_index-1]
-            to_currency = parts[-1]
-        else:
-            if len(parts) >= 2 and parts[0].replace('.', '', 1).isdigit():
-                amount = float(parts[0])
-                from_currency, to_currency = parts[1], parts[2]
-            else:
-                amount = 1
-                from_currency, to_currency = parts[0], parts[1]
-        
-        save_stats(user_id, f"{from_currency}_to_{to_currency}")
-        result, rate = get_exchange_rate(from_currency, to_currency, amount)
-        
-        if result:
-            from_code = CURRENCIES[from_currency.lower()]['code']
-            to_code = CURRENCIES[to_currency.lower()]['code']
-            remaining_display = "∞" if user_id in ADMIN_IDS or json.loads(redis_client.get('stats') or '{}').get("subscriptions", {}).get(user_id, False) else remaining
-            await update.message.reply_text(
-                f"{amount} {from_code} = {result:.6f} {to_code}\n"
-                f"Курс: 1 {from_code} = {rate:.6f} {to_code}\n"
-                f"Осталось запросов: {remaining_display}{AD_MESSAGE}"
-            )
-        else:
-            await update.message.reply_text(f"Ошибка: {rate}")
-    except Exception as e:
-        logger.error(f"Kurs error for {user_id}: {e}")
-        await update.message.reply_text("Ошибка ввода. Примеры: '/kurs usd btc'")
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await enforce_subscription(update, context):
         return
@@ -322,11 +270,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         parts = text.split()
-        amount = float(parts[0])
-        from_currency = parts[1]
-        to_currency = parts[-1] if 'в' in parts or 'to' in parts else None
-        if not to_currency:
+        if len(parts) < 2:
             raise ValueError
+        if parts[0].replace('.', '', 1).isdigit():
+            amount = float(parts[0])
+            from_currency, to_currency = parts[1], parts[2]
+        else:
+            amount = 1
+            from_currency, to_currency = parts[0], parts[1]
         
         save_stats(user_id, f"{from_currency}_to_{to_currency}")
         result, rate = get_exchange_rate(from_currency, to_currency, amount)
@@ -343,12 +294,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"Ошибка: {rate}")
     except Exception as e:
         logger.error(f"Message error for {user_id}: {e}")
-        await update.message.reply_text("Примеры: '10 usd to btc'")
+        await update.message.reply_text('Примеры: "usd btc" или "100 uah usdt"')
 
 # Запуск
 application = Application.builder().token(TELEGRAM_TOKEN).build()
 application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("kurs", kurs_command))
 application.add_handler(CommandHandler("subscribe", subscribe))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 application.job_queue.run_repeating(check_payment_job, interval=60)
