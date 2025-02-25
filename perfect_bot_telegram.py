@@ -167,8 +167,8 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     headers = {'Crypto-Pay-API-Token': CRYPTO_PAY_TOKEN}
     payload = {
+        "asset": "USDT",  # Заменили "currency" на "asset"
         "amount": str(SUBSCRIPTION_PRICE),
-        "currency": "USDT",
         "description": f"Подписка для {user_id}"
     }
     logger.debug(f"Creating invoice: {json.dumps(payload)}")
@@ -184,6 +184,9 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             logger.error(f"Invoice failed: {response}")
             await update.message.reply_text(f"Ошибка платежа: {response.get('error', 'Неизвестная ошибка')}")
+    except requests.RequestException as e:
+        logger.error(f"Subscribe error: {e}")
+        await update.message.reply_text("Ошибка связи с платежной системой")
     except requests.RequestException as e:
         logger.error(f"Subscribe error: {e}")
         await update.message.reply_text("Ошибка связи с платежной системой")
