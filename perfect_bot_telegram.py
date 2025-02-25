@@ -354,7 +354,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.effective_message.reply_text(
         "👋 *Привет!* Я BitCurrencyBot — твой идеальный помощник для конвертации валют в реальном времени!\n"
-        "Выбери действие ниже или напиши запрос (например, \"usd btc\" или \"100 uah usdt\").\n"
+        "🌟 Выбери действие ниже или напиши запрос (например, \"usd btc\" или \"100 uah usdt\").\n"
         f"🔑 *Бесплатно:* {FREE_REQUEST_LIMIT} запросов в сутки.\n"
         f"🌟 *Безлимит:* /subscribe за {SUBSCRIPTION_PRICE} USDT.",
         reply_markup=reply_markup,
@@ -365,8 +365,13 @@ async def currencies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await enforce_subscription(update, context):
         return
     currency_list = ", ".join(sorted(CURRENCIES.keys()))
+    keyboard = [
+        [InlineKeyboardButton("🔙 Назад", callback_data="start")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
     await update.effective_message.reply_text(
         f"💱 *Поддерживаемые валюты:*\n{currency_list}",
+        reply_markup=reply_markup,
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -378,8 +383,9 @@ async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if len(args) != 3 or not args[2].replace('.', '', 1).isdigit():
         keyboard = [
-            [InlineKeyboardButton("Пример: USD → BTC", callback_data="alert_example_usd_btc")],
-            [InlineKeyboardButton("Пример: EUR → UAH", callback_data="alert_example_eur_uah")]
+            [InlineKeyboardButton("🔔 USD → BTC", callback_data="alert_example_usd_btc")],
+            [InlineKeyboardButton("🔔 EUR → UAH", callback_data="alert_example_eur_uah")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="start")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.effective_message.reply_text(
@@ -401,8 +407,14 @@ async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     alerts = json.loads(redis_client.get(f"alerts:{user_id}") or '[]')
     alerts.append({"from": from_currency, "to": to_currency, "target": target_rate})
     redis_client.set(f"alerts:{user_id}", json.dumps(alerts))
+    keyboard = [
+        [InlineKeyboardButton("🔔 Добавить ещё", callback_data="alert"),
+         InlineKeyboardButton("🔙 Назад", callback_data="start")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
     await update.effective_message.reply_text(
         f"🔔 *Уведомление установлено:* {from_currency.upper()} → {to_currency.upper()} при курсе *{target_rate}*",
+        reply_markup=reply_markup,
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -412,14 +424,20 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users = len(stats.get("users", {}))
     requests = stats.get("total_requests", 0)
     revenue = stats.get("revenue", 0.0)
+    keyboard = [
+        [InlineKeyboardButton("🔙 Назад", callback_data="start")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
     if user_id in ADMIN_IDS:
         await update.effective_message.reply_text(
             f"📊 *Админ-статистика:*\n👥 Пользователей: *{users}*\n📈 Запросов: *{requests}*\n💰 Доход: *{revenue} USDT*",
+            reply_markup=reply_markup,
             parse_mode=ParseMode.MARKDOWN
         )
     else:
         await update.effective_message.reply_text(
             f"📊 *Твоя статистика:*\n📈 Запросов сегодня: *{stats.get('users', {}).get(user_id, {}).get('requests', 0)}*",
+            reply_markup=reply_markup,
             parse_mode=ParseMode.MARKDOWN
         )
 
@@ -449,7 +467,10 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if response.get("ok"):
             invoice_id = response["result"]["invoice_id"]
             pay_url = response["result"]["pay_url"]
-            keyboard = [[InlineKeyboardButton(f"💳 Оплатить {SUBSCRIPTION_PRICE} USDT", url=pay_url)]]
+            keyboard = [
+                [InlineKeyboardButton(f"💳 Оплатить {SUBSCRIPTION_PRICE} USDT", url=pay_url)],
+                [InlineKeyboardButton("🔙 Назад", callback_data="start")]
+            ]
             context.user_data[user_id] = {"invoice_id": invoice_id}
             await update.effective_message.reply_text(
                 f"💎 Оплати *{SUBSCRIPTION_PRICE} USDT* для безлимита:",
@@ -475,10 +496,16 @@ async def referrals(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{user_id}"
     refs = len(json.loads(redis_client.get(f"referrals:{user_id}") or '[]'))
+    keyboard = [
+        [InlineKeyboardButton("🔗 Копировать ссылку", callback_data="copy_ref"),
+         InlineKeyboardButton("🔙 Назад", callback_data="start")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
     await update.effective_message.reply_text(
         f"👥 *Твоя реферальная ссылка:* `{ref_link}`\n"
         f"👤 Приглашено пользователей: *{refs}*\n"
-        "Приглашай друзей и получай бонусы (скоро будет доступно)!",
+        "🌟 Приглашай друзей и получай бонусы (скоро будет доступно)!",
+        reply_markup=reply_markup,
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -488,8 +515,13 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     history = json.loads(redis_client.get(f"history:{user_id}") or '[]')
     if not history:
+        keyboard = [
+            [InlineKeyboardButton("🔙 Назад", callback_data="start")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         await update.effective_message.reply_text(
             "📜 *История запросов пуста.*",
+            reply_markup=reply_markup,
             parse_mode=ParseMode.MARKDOWN
         )
         return
@@ -497,7 +529,11 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     response = "📜 *История твоих запросов:*\n"
     for entry in reversed(history):
         response += f"⏰ {entry['time']}: *{entry['amount']} {entry['from']}* → *{entry['result']} {entry['to']}*\n"
-    await update.effective_message.reply_text(response, parse_mode=ParseMode.MARKDOWN)
+    keyboard = [
+        [InlineKeyboardButton("🔙 Назад", callback_data="start")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.effective_message.reply_text(response, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
 
 async def handle_referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
@@ -616,10 +652,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             to_code = CURRENCIES[to_currency.lower()]['code']
             remaining_display = "∞" if is_subscribed else remaining
             precision = 8 if to_code in ['BTC', 'ETH', 'XRP', 'DOGE', 'ADA', 'SOL', 'LTC', 'BNB', 'TRX', 'DOT', 'MATIC'] else 6
+            keyboard = [
+                [InlineKeyboardButton("🔄 Ещё раз", callback_data=f"convert:{from_currency}:{to_currency}")],
+                [InlineKeyboardButton("💱 Другая пара", callback_data="converter"),
+                 InlineKeyboardButton("🔙 Назад", callback_data="start")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
             await update.effective_message.reply_text(
                 f"💰 *{amount:.1f} {from_code}* = *{result:.{precision}f} {to_code}*\n"
                 f"📈 Курс: 1 {from_code} = *{rate:.{precision}f} {to_code}*\n"
                 f"🔄 Осталось запросов: *{remaining_display}*{AD_MESSAGE}",
+                reply_markup=reply_markup,
                 parse_mode=ParseMode.MARKDOWN
             )
             save_history(user_id, from_code, to_code, amount, result)
@@ -630,14 +673,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
     except Exception as e:
         logger.error(f"Message error for {user_id}: {e}")
+        keyboard = [
+            [InlineKeyboardButton("💱 Попробовать снова", callback_data="converter"),
+             InlineKeyboardButton("🔙 Назад", callback_data="start")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         await update.effective_message.reply_text(
-            '📝 Примеры: `"usd btc"` или `"100 uah usdt"`\nИли используй меню через /start',
+            '📝 *Примеры:* `"usd btc"` или `"100 uah usdt"`\nИли используй меню через /start',
+            reply_markup=reply_markup,
             parse_mode=ParseMode.MARKDOWN
         )
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    await query.answer(text="🌟 Обработка... 🌟", show_alert=True)
     user_id = str(query.from_user.id)
     
     if not await enforce_subscription(update, context):
@@ -671,7 +720,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("💶 EUR → UAH", callback_data="convert:eur:uah")],
             [InlineKeyboardButton("₿ BTC → ETH", callback_data="convert:btc:eth"),
              InlineKeyboardButton("₴ UAH → USDT", callback_data="convert:uah:usdt")],
-            [InlineKeyboardButton("🔄 Ввести вручную", callback_data="manual_convert")]
+            [InlineKeyboardButton("🔄 Ввести вручную", callback_data="manual_convert"),
+             InlineKeyboardButton("🔙 Назад", callback_data="start")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
@@ -688,14 +738,20 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         users = len(stats.get("users", {}))
         requests = stats.get("total_requests", 0)
         revenue = stats.get("revenue", 0.0)
+        keyboard = [
+            [InlineKeyboardButton("🔙 Назад", callback_data="start")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         if user_id in ADMIN_IDS:
             await query.edit_message_text(
                 f"📊 *Админ-статистика:*\n👥 Пользователей: *{users}*\n📈 Запросов: *{requests}*\n💰 Доход: *{revenue} USDT*",
+                reply_markup=reply_markup,
                 parse_mode=ParseMode.MARKDOWN
             )
         else:
             await query.edit_message_text(
                 f"📊 *Твоя статистика:*\n📈 Запросов сегодня: *{stats.get('users', {}).get(user_id, {}).get('requests', 0)}*",
+                reply_markup=reply_markup,
                 parse_mode=ParseMode.MARKDOWN
             )
     elif action == "subscribe":
@@ -703,7 +759,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "alert":
         keyboard = [
             [InlineKeyboardButton("🔔 USD → BTC", callback_data="alert_example_usd_btc")],
-            [InlineKeyboardButton("🔔 EUR → UAH", callback_data="alert_example_eur_uah")]
+            [InlineKeyboardButton("🔔 EUR → UAH", callback_data="alert_example_eur_uah")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="start")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
@@ -715,10 +772,16 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "referrals":
         ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{user_id}"
         refs = len(json.loads(redis_client.get(f"referrals:{user_id}") or '[]'))
+        keyboard = [
+            [InlineKeyboardButton("🔗 Копировать ссылку", callback_data="copy_ref"),
+             InlineKeyboardButton("🔙 Назад", callback_data="start")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
             f"👥 *Твоя реферальная ссылка:* `{ref_link}`\n"
             f"👤 Приглашено пользователей: *{refs}*\n"
             "🌟 Приглашай друзей и получай бонусы (скоро будет доступно)!",
+            reply_markup=reply_markup,
             parse_mode=ParseMode.MARKDOWN
         )
     elif action == "history":
@@ -738,6 +801,17 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "💱 *Введи запрос вручную:* например, \"100 uah usdt\"",
             parse_mode=ParseMode.MARKDOWN
         )
+    elif action == "copy_ref":
+        await query.answer(
+            text=f"🌟 Скопировано: https://t.me/{BOT_USERNAME}?start=ref_{user_id} 🌟",
+            show_alert=True
+        )
+        await query.edit_message_text(
+            f"👥 *Реферальная ссылка скопирована в буфер обмена:* `{ref_link}`\n"
+            f"👤 Приглашено пользователей: *{refs}*\n"
+            "🌟 Приглашай друзей и получай бонусы (скоро будет доступно)!",
+            parse_mode=ParseMode.MARKDOWN
+        )
     elif action.startswith("convert:"):
         _, from_currency, to_currency = action.split(":")
         result, rate = get_exchange_rate(from_currency, to_currency)
@@ -747,7 +821,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             precision = 8 if to_code in ['BTC', 'ETH', 'XRP', 'DOGE', 'ADA', 'SOL', 'LTC', 'BNB', 'TRX', 'DOT', 'MATIC'] else 6
             keyboard = [
                 [InlineKeyboardButton("🔄 Ещё раз", callback_data=f"convert:{from_currency}:{to_currency}")],
-                [InlineKeyboardButton("💱 Другая пара", callback_data="converter")]
+                [InlineKeyboardButton("💱 Другая пара", callback_data="converter"),
+                 InlineKeyboardButton("🔙 Назад", callback_data="start")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(
