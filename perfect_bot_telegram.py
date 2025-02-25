@@ -3,11 +3,12 @@ import json
 import time
 import logging
 import requests
-from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup, ParseMode
+from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 import redis
 from telegram.error import NetworkError, RetryAfter, TelegramError
 from collections import deque
+from telegram.constants import ParseMode
 
 # Настройка логирования
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -33,7 +34,7 @@ FREE_REQUEST_LIMIT = 5
 SUBSCRIPTION_PRICE = 5
 CACHE_TIMEOUT = 5
 ADMIN_IDS = ["1058875848", "6403305626"]
-HISTORY_LIMIT = 10  # Лимит истории запросов
+HISTORY_LIMIT = 10
 
 # API endpoints
 BINANCE_API_URL = "https://api.binance.com/api/v3/ticker/price"
@@ -93,7 +94,8 @@ async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except TelegramError as e:
         logger.error(f"Error checking subscription for {user_id}: {e}")
         await update.effective_message.reply_text(
-            "Не могу проверить подписку. Убедись, что бот — админ в @tpgbit, и попробуй снова."
+            "❌ Не могу проверить подписку. Убедись, что бот — админ в @tpgbit, и попробуй снова.",
+            parse_mode=ParseMode.MARKDOWN
         )
         return False
 
@@ -101,7 +103,8 @@ async def enforce_subscription(update: Update, context: ContextTypes.DEFAULT_TYP
     if await check_subscription(update, context):
         return True
     await update.effective_message.reply_text(
-        "Чтобы пользоваться ботом, подпишись на @tpgbit!\nПосле подписки повтори запрос."
+        "🚫 Чтобы пользоваться ботом, подпишись на @tpgbit!\nПосле подписки повтори запрос.",
+        parse_mode=ParseMode.MARKDOWN
     )
     return False
 
@@ -126,7 +129,6 @@ def save_stats(user_id: str, request_type: str):
         logger.error(f"Error saving stats: {e}")
 
 def save_history(user_id: str, from_currency: str, to_currency: str, amount: float, result: float):
-    """Сохраняет запрос в историю пользователя."""
     try:
         history = json.loads(redis_client.get(f"history:{user_id}") or '[]')
         history = deque(history, maxlen=HISTORY_LIMIT)
@@ -351,10 +353,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.effective_message.reply_text(
-        "👋 *Привет!* Я бот для конвертации валют в реальном времени.\n"
+        "👋 *Привет!* Я BitCurrencyBot — твой идеальный помощник для конвертации валют в реальном времени!\n"
         "Выбери действие ниже или напиши запрос (например, \"usd btc\" или \"100 uah usdt\").\n"
-        f"Бесплатно: *{FREE_REQUEST_LIMIT} запросов в сутки*.\n"
-        f"Безлимит: /subscribe за *{SUBSCRIPTION_PRICE} USDT*.",
+        f"🔑 *Бесплатно:* {FREE_REQUEST_LIMIT} запросов в сутки.\n"
+        f"🌟 *Безлимит:* /subscribe за {SUBSCRIPTION_PRICE} USDT.",
         reply_markup=reply_markup,
         parse_mode=ParseMode.MARKDOWN
     )
@@ -363,7 +365,10 @@ async def currencies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await enforce_subscription(update, context):
         return
     currency_list = ", ".join(sorted(CURRENCIES.keys()))
-    await update.effective_message.reply_text(f"💱 *Поддерживаемые валюты:*\n{currency_list}", parse_mode=ParseMode.MARKDOWN)
+    await update.effective_message.reply_text(
+        f"💱 *Поддерживаемые валюты:*\n{currency_list}",
+        parse_mode=ParseMode.MARKDOWN
+    )
 
 async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await enforce_subscription(update, context):
@@ -372,19 +377,32 @@ async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     args = context.args
     if len(args) != 3 or not args[2].replace('.', '', 1).isdigit():
-        await update.effective_message.reply_text('🔔 Пример: `/alert usd btc 0.000015`', parse_mode=ParseMode.MARKDOWN)
+        keyboard = [
+            [InlineKeyboardButton("Пример: USD → BTC", callback_data="alert_example_usd_btc")],
+            [InlineKeyboardButton("Пример: EUR → UAH", callback_data="alert_example_eur_uah")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.effective_message.reply_text(
+            "🔔 *Настрой уведомления!* Введи в формате: `/alert <валюта1> <валюта2> <курс>`\n"
+            "Примеры доступны ниже:",
+            reply_markup=reply_markup,
+            parse_mode=ParseMode.MARKDOWN
+        )
         return
     
     from_currency, to_currency, target_rate = args[0].lower(), args[1].lower(), float(args[2])
     if from_currency not in CURRENCIES or to_currency not in CURRENCIES:
-        await update.effective_message.reply_text("❌ Ошибка: одна из валют не поддерживается", parse_mode=ParseMode.MARKDOWN)
+        await update.effective_message.reply_text(
+            "❌ Ошибка: одна из валют не поддерживается",
+            parse_mode=ParseMode.MARKDOWN
+        )
         return
     
     alerts = json.loads(redis_client.get(f"alerts:{user_id}") or '[]')
     alerts.append({"from": from_currency, "to": to_currency, "target": target_rate})
     redis_client.set(f"alerts:{user_id}", json.dumps(alerts))
     await update.effective_message.reply_text(
-        f"🔔 Уведомление установлено: *{from_currency} → {to_currency}* при курсе *{target_rate}*",
+        f"🔔 *Уведомление установлено:* {from_currency.upper()} → {to_currency.upper()} при курсе *{target_rate}*",
         parse_mode=ParseMode.MARKDOWN
     )
 
@@ -413,7 +431,10 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stats = json.loads(redis_client.get('stats') or '{}')
     if stats.get("subscriptions", {}).get(user_id, False):
         logger.info(f"User {user_id} already subscribed")
-        await update.effective_message.reply_text("💎 Ты уже подписан!", parse_mode=ParseMode.MARKDOWN)
+        await update.effective_message.reply_text(
+            "💎 Ты уже подписан!",
+            parse_mode=ParseMode.MARKDOWN
+        )
         return
     
     headers = {'Crypto-Pay-API-Token': CRYPTO_PAY_TOKEN}
@@ -437,10 +458,16 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         else:
             logger.error(f"Invoice failed: {response}")
-            await update.effective_message.reply_text(f"❌ Ошибка платежа: {response.get('error', 'Неизвестная ошибка')}", parse_mode=ParseMode.MARKDOWN)
+            await update.effective_message.reply_text(
+                f"❌ Ошибка платежа: {response.get('error', 'Неизвестная ошибка')}",
+                parse_mode=ParseMode.MARKDOWN
+            )
     except requests.RequestException as e:
         logger.error(f"Subscribe error: {e}")
-        await update.effective_message.reply_text("❌ Ошибка связи с платежной системой", parse_mode=ParseMode.MARKDOWN)
+        await update.effective_message.reply_text(
+            "❌ Ошибка связи с платежной системой",
+            parse_mode=ParseMode.MARKDOWN
+        )
 
 async def referrals(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await enforce_subscription(update, context):
@@ -461,7 +488,10 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     history = json.loads(redis_client.get(f"history:{user_id}") or '[]')
     if not history:
-        await update.effective_message.reply_text("📜 *История запросов пуста.*", parse_mode=ParseMode.MARKDOWN)
+        await update.effective_message.reply_text(
+            "📜 *История запросов пуста.*",
+            parse_mode=ParseMode.MARKDOWN
+        )
         return
     
     response = "📜 *История твоих запросов:*\n"
@@ -480,7 +510,10 @@ async def handle_referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 referrals.append(user_id)
                 redis_client.set(f"referrals:{referrer_id}", json.dumps(referrals))
                 logger.info(f"New referral: {user_id} for {referrer_id}")
-                await update.effective_message.reply_text("👥 Ты был приглашён через реферальную ссылку! Спасибо!", parse_mode=ParseMode.MARKDOWN)
+                await update.effective_message.reply_text(
+                    "👥 Ты был приглашён через реферальную ссылку! Спасибо!",
+                    parse_mode=ParseMode.MARKDOWN
+                )
 
 async def check_payment_job(context: ContextTypes.DEFAULT_TYPE):
     if not hasattr(context, 'user_data') or not context.user_data:
@@ -505,7 +538,11 @@ async def check_payment_job(context: ContextTypes.DEFAULT_TYPE):
                     redis_client.set('stats', json.dumps(stats))
                     del context.user_data[user_id]
                     logger.info(f"Payment confirmed for {user_id}")
-                    await context.bot.send_message(user_id, "💎 Оплата прошла! У тебя безлимит.", parse_mode=ParseMode.MARKDOWN)
+                    await context.bot.send_message(
+                        user_id,
+                        "💎 Оплата прошла! У тебя безлимит.",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
         except requests.RequestException as e:
             logger.error(f"Payment check error for {user_id}: {e}")
 
@@ -541,12 +578,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     delay = 1 if is_subscribed else 5
     
     if 'last_request' in context.user_data and time.time() - context.user_data['last_request'] < delay:
-        await update.effective_message.reply_text(f"⏳ Подожди {delay} секунд{'у' if delay == 1 else ''}!", parse_mode=ParseMode.MARKDOWN)
+        await update.effective_message.reply_text(
+            f"⏳ Подожди {delay} секунд{'у' if delay == 1 else ''}!",
+            parse_mode=ParseMode.MARKDOWN
+        )
         return
     
     can_proceed, remaining = check_limit(user_id)
     if not can_proceed:
-        await update.effective_message.reply_text(f"❌ Лимит {FREE_REQUEST_LIMIT} запросов исчерпан. Подпишись: /subscribe", parse_mode=ParseMode.MARKDOWN)
+        await update.effective_message.reply_text(
+            f"❌ Лимит {FREE_REQUEST_LIMIT} запросов исчерпан. Подпишись: /subscribe",
+            parse_mode=ParseMode.MARKDOWN
+        )
         return
     
     context.user_data['last_request'] = time.time()
@@ -581,7 +624,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             save_history(user_id, from_code, to_code, amount, result)
         else:
-            await update.effective_message.reply_text(f"❌ Ошибка: {rate}", parse_mode=ParseMode.MARKDOWN)
+            await update.effective_message.reply_text(
+                f"❌ Ошибка: {rate}",
+                parse_mode=ParseMode.MARKDOWN
+            )
     except Exception as e:
         logger.error(f"Message error for {user_id}: {e}")
         await update.effective_message.reply_text(
@@ -602,12 +648,18 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     delay = 1 if is_subscribed else 5
     
     if 'last_request' in context.user_data and time.time() - context.user_data['last_request'] < delay:
-        await query.edit_message_text(f"⏳ Подожди {delay} секунд{'у' if delay == 1 else ''}!", parse_mode=ParseMode.MARKDOWN)
+        await query.edit_message_text(
+            f"⏳ Подожди {delay} секунд{'у' if delay == 1 else ''}!",
+            parse_mode=ParseMode.MARKDOWN
+        )
         return
     
     can_proceed, remaining = check_limit(user_id)
     if not can_proceed:
-        await query.edit_message_text(f"❌ Лимит {FREE_REQUEST_LIMIT} запросов исчерпан. Подпишись: /subscribe", parse_mode=ParseMode.MARKDOWN)
+        await query.edit_message_text(
+            f"❌ Лимит {FREE_REQUEST_LIMIT} запросов исчерпан. Подпишись: /subscribe",
+            parse_mode=ParseMode.MARKDOWN
+        )
         return
     
     context.user_data['last_request'] = time.time()
@@ -615,19 +667,23 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "converter":
         keyboard = [
-            [InlineKeyboardButton("USD → BTC", callback_data="convert:usd:btc"),
-             InlineKeyboardButton("EUR → UAH", callback_data="convert:eur:uah")],
-            [InlineKeyboardButton("BTC → ETH", callback_data="convert:btc:eth"),
-             InlineKeyboardButton("UAH → USDT", callback_data="convert:uah:usdt")]
+            [InlineKeyboardButton("💰 USD → BTC", callback_data="convert:usd:btc"),
+             InlineKeyboardButton("💶 EUR → UAH", callback_data="convert:eur:uah")],
+            [InlineKeyboardButton("₿ BTC → ETH", callback_data="convert:btc:eth"),
+             InlineKeyboardButton("₴ UAH → USDT", callback_data="convert:uah:usdt")],
+            [InlineKeyboardButton("🔄 Ввести вручную", callback_data="manual_convert")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
-            "💱 Выбери пару или введи вручную (например, \"100 uah usdt\"):",
+            "💱 *Выбери валютную пару или введи вручную (например, \"100 uah usdt\"):*",
             reply_markup=reply_markup,
             parse_mode=ParseMode.MARKDOWN
         )
     elif action == "price":
-        await query.edit_message_text("📈 Введи валюту для проверки текущей цены, например: \"btc usd\"", parse_mode=ParseMode.MARKDOWN)
+        await query.edit_message_text(
+            "📈 *Введи валюту для проверки текущей цены, например: \"btc usd\"*",
+            parse_mode=ParseMode.MARKDOWN
+        )
     elif action == "stats":
         users = len(stats.get("users", {}))
         requests = stats.get("total_requests", 0)
@@ -645,18 +701,43 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "subscribe":
         await subscribe(update, context)
     elif action == "alert":
-        await query.edit_message_text("🔔 Введи уведомление, например: `/alert usd btc 0.000015`", parse_mode=ParseMode.MARKDOWN)
+        keyboard = [
+            [InlineKeyboardButton("🔔 USD → BTC", callback_data="alert_example_usd_btc")],
+            [InlineKeyboardButton("🔔 EUR → UAH", callback_data="alert_example_eur_uah")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "🔔 *Настрой уведомления!* Введи в формате: `/alert <валюта1> <валюта2> <курс>`\n"
+            "Примеры доступны ниже:",
+            reply_markup=reply_markup,
+            parse_mode=ParseMode.MARKDOWN
+        )
     elif action == "referrals":
         ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{user_id}"
         refs = len(json.loads(redis_client.get(f"referrals:{user_id}") or '[]'))
         await query.edit_message_text(
             f"👥 *Твоя реферальная ссылка:* `{ref_link}`\n"
             f"👤 Приглашено пользователей: *{refs}*\n"
-            "Приглашай друзей и получай бонусы (скоро будет доступно)!",
+            "🌟 Приглашай друзей и получай бонусы (скоро будет доступно)!",
             parse_mode=ParseMode.MARKDOWN
         )
     elif action == "history":
         await history(update, context)
+    elif action == "alert_example_usd_btc":
+        await query.edit_message_text(
+            "🔔 Пример: `/alert usd btc 0.000015` — уведомит, когда 1 USD = 0.000015 BTC",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    elif action == "alert_example_eur_uah":
+        await query.edit_message_text(
+            "🔔 Пример: `/alert eur uah 45.0` — уведомит, когда 1 EUR = 45 UAH",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    elif action == "manual_convert":
+        await query.edit_message_text(
+            "💱 *Введи запрос вручную:* например, \"100 uah usdt\"",
+            parse_mode=ParseMode.MARKDOWN
+        )
     elif action.startswith("convert:"):
         _, from_currency, to_currency = action.split(":")
         result, rate = get_exchange_rate(from_currency, to_currency)
@@ -664,15 +745,24 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             from_code = CURRENCIES[from_currency]['code']
             to_code = CURRENCIES[to_currency]['code']
             precision = 8 if to_code in ['BTC', 'ETH', 'XRP', 'DOGE', 'ADA', 'SOL', 'LTC', 'BNB', 'TRX', 'DOT', 'MATIC'] else 6
+            keyboard = [
+                [InlineKeyboardButton("🔄 Ещё раз", callback_data=f"convert:{from_currency}:{to_currency}")],
+                [InlineKeyboardButton("💱 Другая пара", callback_data="converter")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(
                 f"💰 *1.0 {from_code}* = *{result:.{precision}f} {to_code}*\n"
                 f"📈 Курс: 1 {from_code} = *{rate:.{precision}f} {to_code}*\n"
                 f"🔄 Осталось запросов: *{remaining}*{AD_MESSAGE}",
+                reply_markup=reply_markup,
                 parse_mode=ParseMode.MARKDOWN
             )
             save_history(user_id, from_code, to_code, 1.0, result)
         else:
-            await query.edit_message_text(f"❌ Ошибка: {rate}", parse_mode=ParseMode.MARKDOWN)
+            await query.edit_message_text(
+                f"❌ Ошибка: {rate}",
+                parse_mode=ParseMode.MARKDOWN
+            )
 
 if __name__ == "__main__":
     application = Application.builder().token(TELEGRAM_TOKEN).build()
