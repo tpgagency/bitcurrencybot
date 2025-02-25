@@ -61,6 +61,7 @@ CURRENCIES = {
 UAH_TO_USD_FALLBACK = 0.0239  # 1 UAH ≈ 0.0239 USD (по данным Coinbase, KuCoin, Bybit)
 USD_TO_EUR_FALLBACK = 0.952    # 1 USD ≈ 0.952 EUR (по данным Wise, Xe)
 USDT_TO_USD_FALLBACK = 1.0     # 1 USDT = 1 USD (стейблкоин)
+UAH_TO_USDT_FALLBACK = 0.0239  # 1 UAH ≈ 0.0239 USDT (по данным Coinbase, KuCoin, Bybit)
 
 async def set_bot_commands(application: Application):
     commands = [
@@ -185,9 +186,9 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
         
         if from_id in response and to_code in response[from_id]:
             rate = response[from_id][to_code]
-            if rate <= 0:
+            if rate <= 0 or rate > 10:  # Проверка на завышенные курсы
                 logger.error(f"Invalid direct rate: {rate}")
-                return None, "Курс недоступен (нулевое значение)"
+                return None, "Курс недоступен (неверное значение)"
             redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
             return amount * rate, rate
         
@@ -199,9 +200,9 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
         
         if to_id in response_reverse and from_key in response_reverse[to_id]:
             rate = 1 / response_reverse[to_id][from_key]
-            if rate <= 0:
+            if rate <= 0 or rate > 10:  # Проверка на завышенные курсы
                 logger.error(f"Invalid reverse rate: {rate}")
-                return None, "Курс недоступен (нулевое значение)"
+                return None, "Курс недоступен (неверное значение)"
             redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
             return amount * rate, rate
         
@@ -218,14 +219,14 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
                 
                 if from_id in response_from_usd and 'usd' in response_from_usd[from_id]:
                     rate_from_usd = response_from_usd[from_id]['usd']
-                    if rate_from_usd <= 0:
+                    if rate_from_usd <= 0 or rate_from_usd > 10:  # Проверка на некорректные значения
                         logger.error(f"Invalid rate from {from_key} to USD: {rate_from_usd}")
                         # Резервный фиксированный курс для UAH, если данные отсутствуют
                         if from_key == 'uah':
                             logger.warning(f"Using fallback rate for UAH to USD: {UAH_TO_USD_FALLBACK}")
                             rate_from_usd = UAH_TO_USD_FALLBACK
                         else:
-                            return None, "Курс недоступен (нулевое значение)"
+                            return None, "Курс недоступен (неверное значение)"
                 else:
                     logger.error(f"No rate found for {from_id} to USD")
                     # Резервный фиксированный курс для UAH, если данные отсутствуют
@@ -245,26 +246,29 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
                 
                 if 'usd' in response_to_usd and to_code in response_to_usd['usd']:
                     rate_to_target = response_to_usd['usd'][to_code]
-                    if rate_to_target <= 0:
+                    if rate_to_target <= 0 or rate_to_target > 10:  # Проверка на некорректные значения
                         logger.error(f"Invalid rate from USD to {to_key}: {rate_to_target}")
                         # Резервный фиксированный курс для EUR, если данные отсутствуют
                         if to_key == 'eur':
                             logger.warning(f"Using fallback rate for USD to EUR: {USD_TO_EUR_FALLBACK}")
                             rate_to_target = USD_TO_EUR_FALLBACK
                         else:
-                            return None, "Курс недоступен (нулевое значение)"
+                            return None, "Курс недоступен (неверное значение)"
                 else:
                     logger.error(f"No rate found for USD to {to_id}")
                     # Резервный фиксированный курс для EUR, если данные отсутствуют
                     if to_key == 'eur':
                         logger.warning(f"Using fallback rate for USD to EUR: {USD_TO_EUR_FALLBACK}")
                         rate_to_target = USD_TO_EUR_FALLBACK
+                    elif to_key == 'uah':
+                        logger.warning(f"Using fallback rate for USDT to UAH: {1 / UAH_TO_USDT_FALLBACK}")
+                        rate_to_target = 1 / UAH_TO_USDT_FALLBACK  # 1 USDT ≈ 41.77 UAH
                     else:
                         return None, "Курс недоступен: данные отсутствуют"
             
             # Вычисляем итоговый курс: (1 / rate_from_usd) * rate_to_target
             final_rate = (1 / rate_from_usd) * rate_to_target
-            if final_rate <= 0 or final_rate > 1000:  # Дополнительная проверка на завышенные курсы
+            if final_rate <= 0 or final_rate > 10:  # Дополнительная проверка на завышенные/заниженные курсы
                 logger.error(f"Invalid final rate: {final_rate}")
                 return None, "Курс недоступен (неверное значение)"
             
