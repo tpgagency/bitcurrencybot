@@ -4,7 +4,7 @@ import time
 import logging
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes  # Добавлен CallbackQueryHandler
 import redis
 from telegram.error import NetworkError, RetryAfter, TelegramError
 
@@ -180,8 +180,25 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
         return None, f"Ошибка API: {str(e)}"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await enforce_subscription(update, context):
+        return
     user_id = str(update.message.from_user.id)
-    await update.message.reply_text(f"Привет, {user_id}! Я бот для конвертации валют.")
+    save_stats(user_id, "start")
+    logger.info(f"User {user_id} started bot")
+    keyboard = [
+        [InlineKeyboardButton("USD → BTC", callback_data="usd btc")],
+        [InlineKeyboardButton("ETH → USDT", callback_data="eth usdt")],
+        [InlineKeyboardButton("UAH → USDT", callback_data="uah usdt")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        'Привет! Я бот для конвертации валют.\n'
+        'Просто напиши коды валют, например: "usd btc" или "100 uah usdt".\n'
+        f'Бесплатно: {FREE_REQUEST_LIMIT} запросов в сутки.\n'
+        f'Безлимит: /subscribe за {SUBSCRIPTION_PRICE} USDT.\n'
+        'Попробуй популярные пары ниже или /currencies для списка валют.',
+        reply_markup=reply_markup
+    )
 
 async def currencies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await enforce_subscription(update, context):
@@ -337,7 +354,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_stats(user_id, f"{from_currency}_to_{to_currency}")
         result, rate = get_exchange_rate(from_currency, to_currency, amount)
         if result:
-            from_code = CURRENCIES[from_currency.lower()]['code']
+            from_code = CURENCIES[from_currency.lower()]['code']
             to_code = CURRENCIES[to_currency.lower()]['code']
             remaining_display = "∞" if user_id in ADMIN_IDS or stats.get("subscriptions", {}).get(user_id, False) else remaining
             await update.message.reply_text(
