@@ -145,28 +145,30 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
     
     from_id = from_data['id']
     to_id = to_data['id']
+    to_code = to_data['code'].lower()  # Используем код валюты для ответа API
     
     try:
-        url = f"https://api.coingecko.com/api/v3/simple/price?ids={from_id}&vs_currencies={to_id}"
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids={from_id}&vs_currencies={to_code}"
         logger.debug(f"Fetching: {url}")
         response = requests.get(url, timeout=15).json()
         logger.info(f"Response: {json.dumps(response)}")
         
-        if from_id in response and to_id in response[from_id]:
-            rate = response[from_id][to_id]
+        if from_id in response and to_code in response[from_id]:
+            rate = response[from_id][to_code]
             if rate <= 0:
                 logger.error(f"Invalid rate: {rate}")
                 return None, "Курс недоступен (нулевое значение)"
             redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
             return amount * rate, rate
         
-        url_reverse = f"https://api.coingecko.com/api/v3/simple/price?ids={to_id}&vs_currencies={from_id}"
+        # Пробуем обратный курс
+        url_reverse = f"https://api.coingecko.com/api/v3/simple/price?ids={to_id}&vs_currencies={from_key}"
         logger.debug(f"Fetching reverse: {url_reverse}")
         response_reverse = requests.get(url_reverse, timeout=15).json()
         logger.info(f"Reverse response: {json.dumps(response_reverse)}")
         
-        if to_id in response_reverse and from_id in response_reverse[to_id]:
-            rate = 1 / response_reverse[to_id][from_id]
+        if to_id in response_reverse and from_key in response_reverse[to_id]:
+            rate = 1 / response_reverse[to_id][from_key]
             if rate <= 0:
                 logger.error(f"Invalid reverse rate: {rate}")
                 return None, "Курс недоступен (нулевое значение)"
