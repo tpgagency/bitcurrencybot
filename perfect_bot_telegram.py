@@ -37,17 +37,17 @@ ADMIN_IDS = ["1058875848", "6403305626"]
 BINANCE_API_URL = "https://api.binance.com/api/v3/ticker/price"
 WHITEBIT_API_URL = "https://whitebit.com/api/v1/public/ticker"
 
-# Поддерживаемые валюты (соответствие кодам Binance и WhiteBIT)
+# Поддерживаемые валюты
 CURRENCIES = {
-    'usd': {'code': 'USDT'},  # Binance и WhiteBIT используют USDT как аналог USD
-    'uah': {'code': 'UAH'},   # Поддерживается на WhiteBIT
-    'eur': {'code': 'EUR'},   # Поддерживается на WhiteBIT
-    'rub': {'code': 'RUB'},   # Поддерживается на WhiteBIT
-    'jpy': {'code': 'JPY'},   # Поддерживается на WhiteBIT
-    'cny': {'code': 'CNY'},   # Неподдерживаемая валюта
-    'gbp': {'code': 'GBP'},   # Поддерживается на WhiteBIT
-    'kzt': {'code': 'KZT'},   # Поддерживается на WhiteBIT
-    'try': {'code': 'TRY'},   # Поддерживается на WhiteBIT
+    'usd': {'code': 'USDT'},
+    'uah': {'code': 'UAH'},
+    'eur': {'code': 'EUR'},
+    'rub': {'code': 'RUB'},
+    'jpy': {'code': 'JPY'},
+    'cny': {'code': 'CNY'},
+    'gbp': {'code': 'GBP'},
+    'kzt': {'code': 'KZT'},
+    'try': {'code': 'TRY'},
     'btc': {'code': 'BTC'},
     'eth': {'code': 'ETH'},
     'xrp': {'code': 'XRP'},
@@ -62,7 +62,7 @@ CURRENCIES = {
     'matic': {'code': 'MATIC'}
 }
 
-# Фиксированные курсы для валют, отсутствующих на биржах
+# Фиксированные курсы для fallback
 UAH_TO_USDT_FALLBACK = 0.0239  # 1 UAH ≈ 0.0239 USDT
 USDT_TO_UAH_FALLBACK = 41.84   # 1 USDT ≈ 41.84 UAH
 
@@ -203,9 +203,10 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
         reverse_pair = f"{to_code}{from_code}"
         response = requests.get(f"{BINANCE_API_URL}?symbol={reverse_pair}", timeout=10).json()
         if 'price' in response:
-            rate = 1 / float(response['price'])
-            if rate <= 0:
-                raise ValueError(f"Invalid Binance reverse rate for {reverse_pair}: {rate}")
+            reverse_rate = float(response['price'])
+            if reverse_rate <= 0:
+                raise ValueError(f"Invalid Binance reverse rate for {reverse_pair}: {reverse_rate}")
+            rate = 1 / reverse_rate
             logger.info(f"Binance reverse rate: {reverse_pair} = {rate}")
             redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
             return amount * rate, rate
@@ -213,19 +214,25 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
         # Расчёт через USDT
         rate_from_usdt = None
         rate_to_usdt = None
+        
+        # from → USDT
         if from_key != 'usdt':
             from_usdt_pair = f"{from_code}USDT"
             response_from = requests.get(f"{BINANCE_API_URL}?symbol={from_usdt_pair}", timeout=10).json()
             if 'price' in response_from:
                 rate_from_usdt = float(response_from['price'])
+                logger.debug(f"Binance {from_usdt_pair} = {rate_from_usdt}")
         else:
             rate_from_usdt = 1.0
         
+        # USDT → to
         if to_key != 'usdt':
             usdt_to_pair = f"USDT{to_code}"
             response_to = requests.get(f"{BINANCE_API_URL}?symbol={usdt_to_pair}", timeout=10).json()
             if 'price' in response_to:
-                rate_to_usdt = 1 / float(response_to['price'])
+                usdt_to_rate = float(response_to['price'])
+                rate_to_usdt = 1 / usdt_to_rate
+                logger.debug(f"Binance {usdt_to_pair} = {usdt_to_rate}, inverse = {rate_to_usdt}")
         else:
             rate_to_usdt = 1.0
         
@@ -256,9 +263,10 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
         # Обратный запрос (to_code_from_code)
         reverse_pair_key = f"{to_code}_{from_code}"
         if reverse_pair_key in response:
-            rate = 1 / float(response[reverse_pair_key]['last_price'])
-            if rate <= 0:
-                raise ValueError(f"Invalid WhiteBIT reverse rate for {reverse_pair_key}: {rate}")
+            reverse_rate = float(response[reverse_pair_key]['last_price'])
+            if reverse_rate <= 0:
+                raise ValueError(f"Invalid WhiteBIT reverse rate for {reverse_pair_key}: {reverse_rate}")
+            rate = 1 / reverse_rate
             logger.info(f"WhiteBIT reverse rate: {reverse_pair_key} = {rate}")
             redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
             return amount * rate, rate
@@ -266,17 +274,29 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
         # Расчёт через USDT
         rate_from_usdt = None
         rate_to_usdt = None
+        
+        # from → USDT
         if from_key != 'usdt':
             from_usdt_pair = f"{from_code}_USDT"
             if from_usdt_pair in response:
                 rate_from_usdt = float(response[from_usdt_pair]['last_price'])
+                logger.debug(f"WhiteBIT {from_usdt_pair} = {rate_from_usdt}")
         else:
             rate_from_usdt = 1.0
         
+        # USDT → to
         if to_key != 'usdt':
             usdt_to_pair = f"USDT_{to_code}"
             if usdt_to_pair in response:
-                rate_to_usdt = 1 / float(response[usdt_to_pair]['last_price'])
+                usdt_to_rate = float(response[usdt_to_pair]['last_price'])
+                rate_to_usdt = 1 / usdt_to_rate
+                logger.debug(f"WhiteBIT {usdt_to_pair} = {usdt_to_rate}, inverse = {rate_to_usdt}")
+            else:
+                # Пробуем обратную пару (to_USDT)
+                to_usdt_pair = f"{to_code}_USDT"
+                if to_usdt_pair in response:
+                    rate_to_usdt = float(response[to_usdt_pair]['last_price'])
+                    logger.debug(f"WhiteBIT {to_usdt_pair} = {rate_to_usdt}")
         else:
             rate_to_usdt = 1.0
         
@@ -592,7 +612,6 @@ if __name__ == "__main__":
         redis_client.set('stats', json.dumps({"users": {}, "total_requests": 0, "request_types": {}, "subscriptions": {}, "revenue": 0.0}))
     logger.info("Bot starting...")
     try:
-        # Запустить приложение с бесконечным циклом
         application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
     except NetworkError as e:
         logger.error(f"Network error on start: {e}")
