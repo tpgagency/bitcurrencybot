@@ -3,7 +3,7 @@ import json
 import time
 import logging
 import requests
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 import redis
 from telegram.error import NetworkError, RetryAfter, TelegramError
@@ -17,6 +17,7 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CRYPTO_PAY_TOKEN = os.getenv('CRYPTO_PAY_TOKEN')
 REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
 CHANNEL_USERNAME = "@tpgbit"
+BOT_USERNAME = "BitCurrencyBot"  # Замени на имя твоего бота
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True, ssl_cert_reqs="none")
 
 if not TELEGRAM_TOKEN:
@@ -31,7 +32,6 @@ FREE_REQUEST_LIMIT = 5
 SUBSCRIPTION_PRICE = 5
 CACHE_TIMEOUT = 120
 ADMIN_IDS = ["1058875848", "6403305626"]
-BOT_USERNAME = "BitCurrencyBot"  # Замени на имя твоего бота
 
 CURRENCIES = {
     'usd': {'id': 'usd', 'code': 'USD'},
@@ -56,6 +56,18 @@ CURRENCIES = {
     'dot': {'id': 'polkadot', 'code': 'DOT'},
     'matic': {'id': 'matic-network', 'code': 'MATIC'}
 }
+
+async def set_bot_commands(application: Application):
+    commands = [
+        ("start", "Меню бота"),
+        ("currencies", "Платежи"),
+        ("stats", "Статистика"),
+        ("subscribe", "Подписка"),
+        ("alert", "Уведомления"),
+        ("referrals", "Рефералы")
+    ]
+    bot = application.bot
+    await bot.set_my_commands(commands)
 
 async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     user_id = update.message.from_user.id if update.message else update.callback_query.from_user.id
@@ -199,15 +211,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_stats(user_id, "start")
     logger.info(f"User {user_id} started bot")
     keyboard = [
-        [InlineKeyboardButton("Конвертер", callback_data="converter")],
-        [InlineKeyboardButton("Текущая цена", callback_data="price")],
-        [InlineKeyboardButton("Статистика", callback_data="stats")],
-        [InlineKeyboardButton("Рефералы", callback_data="referrals")]
+        [InlineKeyboardButton("Меню", switch_inline_query_current_chat="")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
         'Привет! Я бот для конвертации валют.\n'
-        'Выбери функцию в меню ниже:',
+        'Выбери команду в меню Telegram (внизу слева) или используй /currencies для списка валют.',
         reply_markup=reply_markup
     )
 
@@ -281,6 +290,33 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except requests.RequestException as e:
         logger.error(f"Subscribe error: {e}")
         await update.message.reply_text("Ошибка связи с платежной системой")
+
+async def referrals(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await enforce_subscription(update, context):
+        return
+    user_id = str(update.message.from_user.id)
+    ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{user_id}"
+    refs = len(json.loads(redis_client.get(f"referrals:{user_id}") or '[]'))
+    await update.message.reply_text(
+        f"Твоя реферальная ссылка: {ref_link}\n"
+        f"Приглашено пользователей: {refs}\n"
+        "Приглашай друзей и получай бонусы (скоро будет доступно)!"
+    )
+
+async def handle_referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.message.from_user.id)
+    args = context.args
+    if len(args) == 1 and args[0].startswith("ref_"):
+        referrer_id = args[0].replace("ref_", "")
+        if referrer_id.isdigit():
+            referrals = json.loads(redis_client.get(f"referrals:{referrer_id}") or '[]')
+            if user_id not in referrals:
+                referrals.append(user_id)
+                redis_client.set(f"referrals:{referrer_id}", json.dumps(referrals))
+                logger.info(f"New referral: {user_id} for {referrer_id}")
+                await update.message.reply_text(
+                    "Ты был приглашён через реферальную ссылку! Спасибо!"
+                )
 
 async def check_payment_job(context: ContextTypes.DEFAULT_TYPE):
     if not hasattr(context, 'user_data') or context.user_data is None:
@@ -433,15 +469,23 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Запуск
 application = Application.builder().token(TELEGRAM_TOKEN).build()
+
+# Установить команды бота
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("currencies", currencies))
 application.add_handler(CommandHandler("alert", alert))
 application.add_handler(CommandHandler("stats", stats))
 application.add_handler(CommandHandler("subscribe", subscribe))
+application.add_handler(CommandHandler("referrals", referrals))
+application.add_handler(CommandHandler("help", start))  # Добавлена команда /help для меню
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 application.add_handler(CallbackQueryHandler(button))
 application.job_queue.run_repeating(check_payment_job, interval=60)
 application.job_queue.run_repeating(check_alerts_job, interval=60)
+
+# Установить меню бота
+application.run_pre_update_check = True  # Убедиться, что команды обновятся при запуске
+application.run_post_init = set_bot_commands(application)
 
 if __name__ == "__main__":
     if not redis_client.exists('stats'):
