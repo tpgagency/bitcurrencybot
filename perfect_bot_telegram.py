@@ -732,7 +732,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "price":
         await query.edit_message_text(
             "📈 *Введи валюту для проверки текущей цены, например: \"btc usd\"*",
-            parse_mode=ParseMode.MARKDOWN
+        parse_mode=ParseMode.MARKDOWN
         )
     elif action == "stats":
         users = len(stats.get("users", {}))
@@ -842,6 +842,9 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 if __name__ == "__main__":
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
+    # Инициализация JobQueue
+    application.job_queue = application.job_queue  # Убедимся, что JobQueue инициализирован
+
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("currencies", currencies))
     application.add_handler(CommandHandler("alert", alert))
@@ -851,6 +854,8 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("history", history))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(button))
+
+    # Настройка периодических задач
     application.job_queue.run_repeating(check_payment_job, interval=60)
     application.job_queue.run_repeating(check_alerts_job, interval=60)
 
