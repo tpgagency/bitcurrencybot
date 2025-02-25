@@ -473,13 +473,14 @@ application.job_queue.run_repeating(check_payment_job, interval=60)
 application.job_queue.run_repeating(check_alerts_job, interval=60)
 
 # Установить меню бота
-await set_bot_commands(application)
-
 if __name__ == "__main__":
     if not redis_client.exists('stats'):
         redis_client.set('stats', json.dumps({"users": {}, "total_requests": 0, "request_types": {}, "subscriptions": {}, "revenue": 0.0}))
     logger.info("Bot starting...")
     try:
+        # Установить команды перед запуском
+        import asyncio
+        asyncio.run(set_bot_commands(application))
         application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
     except NetworkError as e:
         logger.error(f"Network error on start: {e}")
