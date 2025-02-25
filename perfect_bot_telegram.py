@@ -64,7 +64,8 @@ async def set_bot_commands(application: Application):
         ("stats", "Статистика"),
         ("subscribe", "Подписка"),
         ("alert", "Уведомления"),
-        ("referrals", "Рефералы")
+        ("referrals", "Рефералы"),
+        ("help", "Меню")
     ]
     bot = application.bot
     await bot.set_my_commands(commands)
@@ -205,20 +206,8 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
         return None, f"Ошибка API: {str(e)}"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await enforce_subscription(update, context):
-        return
     user_id = str(update.message.from_user.id)
-    save_stats(user_id, "start")
-    logger.info(f"User {user_id} started bot")
-    keyboard = [
-        [InlineKeyboardButton("Меню", switch_inline_query_current_chat="")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
-        'Привет! Я бот для конвертации валют.\n'
-        'Выбери команду в меню Telegram (внизу слева) или используй /currencies для списка валют.',
-        reply_markup=reply_markup
-    )
+    await update.message.reply_text(f"Привет, {user_id}! Я бот для конвертации валют.")
 
 async def currencies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await enforce_subscription(update, context):
@@ -477,15 +466,14 @@ application.add_handler(CommandHandler("alert", alert))
 application.add_handler(CommandHandler("stats", stats))
 application.add_handler(CommandHandler("subscribe", subscribe))
 application.add_handler(CommandHandler("referrals", referrals))
-application.add_handler(CommandHandler("help", start))  # Добавлена команда /help для меню
+application.add_handler(CommandHandler("help", start))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 application.add_handler(CallbackQueryHandler(button))
 application.job_queue.run_repeating(check_payment_job, interval=60)
 application.job_queue.run_repeating(check_alerts_job, interval=60)
 
 # Установить меню бота
-application.run_pre_update_check = True  # Убедиться, что команды обновятся при запуске
-application.run_post_init = set_bot_commands(application)
+await set_bot_commands(application)
 
 if __name__ == "__main__":
     if not redis_client.exists('stats'):
