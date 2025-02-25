@@ -200,8 +200,8 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
             redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
             return amount * rate, rate
         
-        # Косвенный курс через USD для фиатных валют
-        if from_key in ['usd', 'uah', 'eur', 'rub', 'jpy', 'cny', 'gbp', 'kzt', 'try'] and to_key in ['usd', 'uah', 'eur', 'rub', 'jpy', 'cny', 'gbp', 'kzt', 'try']:
+        # Косвенный курс через USD для всех пар (фиат-фиат, фиат-крипто, крипто-фиат)
+        if from_key in CURRENCIES and to_key in CURRENCIES:
             # Получаем курс от исходной валюты к USD
             url_from_usd = f"https://api.coingecko.com/api/v3/simple/price?ids={from_id}&vs_currencies=usd"
             response_from_usd = requests.get(url_from_usd, timeout=15).json()
