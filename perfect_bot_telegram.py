@@ -63,6 +63,9 @@ USD_TO_EUR_FALLBACK = 0.952    # 1 USD ≈ 0.952 EUR (по данным Wise, Xe
 USDT_TO_USD_FALLBACK = 1.0     # 1 USDT = 1 USD (стейблкоин)
 UAH_TO_USDT_FALLBACK = 0.0239  # 1 UAH ≈ 0.0239 USDT (по данным Coinbase, KuCoin, Bybit)
 
+# Таймаут после ошибки 429 (секунд)
+COINGECKO_RATE_LIMIT_TIMEOUT = 60  # Ждать 1 минуту после превышения лимита
+
 async def set_bot_commands(application: Application):
     commands = [
         ("start", "Меню бота"),
@@ -177,98 +180,79 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
     to_id = to_data['id']
     to_code = to_data['code'].lower()
     
+    # Проверка на превышение лимита запросов к CoinGecko
+    rate_limit_blocked_until = redis_client.get('coingecko_rate_limit_blocked_until')
+    if rate_limit_blocked_until and float(rate_limit_blocked_until) > time.time():
+        logger.warning(f"Rate limit exceeded, using fallback rates until {rate_limit_blocked_until}")
+    else:
+        try:
+            # Прямой запрос
+            url = f"https://api.coingecko.com/api/v3/simple/price?ids={from_id}&vs_currencies={to_code}"
+            logger.debug(f"Fetching direct: {url}")
+            response = requests.get(url, timeout=15).json()
+            logger.info(f"Direct response: {json.dumps(response)}")
+            
+            if from_id in response and to_code in response[from_id]:
+                rate = response[from_id][to_code]
+                if rate <= 0 or rate > 100:  # Увеличен лимит для больших курсов
+                    logger.error(f"Invalid direct rate: {rate}")
+                    raise ValueError("Invalid rate")
+                redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
+                return amount * rate, rate
+            
+            # Обратный запрос
+            url_reverse = f"https://api.coingecko.com/api/v3/simple/price?ids={to_id}&vs_currencies={from_key}"
+            logger.debug(f"Fetching reverse: {url_reverse}")
+            response_reverse = requests.get(url_reverse, timeout=15).json()
+            logger.info(f"Reverse response: {json.dumps(response_reverse)}")
+            
+            if to_id in response_reverse and from_key in response_reverse[to_id]:
+                rate = 1 / response_reverse[to_id][from_key]
+                if rate <= 0 or rate > 100:  # Увеличен лимит для больших курсов
+                    logger.error(f"Invalid reverse rate: {rate}")
+                    raise ValueError("Invalid rate")
+                redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
+                return amount * rate, rate
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"API error: {e}")
+        except ValueError as e:
+            logger.error(f"Rate error: {e}")
+        
+        # Проверка на ошибку 429
+        if isinstance(response, dict) and response.get('status', {}).get('error_code') == 429:
+            logger.error("CoinGecko rate limit exceeded (429)")
+            redis_client.setex('coingecko_rate_limit_blocked_until', COINGECKO_RATE_LIMIT_TIMEOUT, time.time() + COINGECKO_RATE_LIMIT_TIMEOUT)
+    
+    # Использование только фиксированных курсов, если API недоступно
     try:
-        # Прямой запрос
-        url = f"https://api.coingecko.com/api/v3/simple/price?ids={from_id}&vs_currencies={to_code}"
-        logger.debug(f"Fetching direct: {url}")
-        response = requests.get(url, timeout=15).json()
-        logger.info(f"Direct response: {json.dumps(response)}")
-        
-        if from_id in response and to_code in response[from_id]:
-            rate = response[from_id][to_code]
-            if rate <= 0 or rate > 10:  # Проверка на завышенные курсы
-                logger.error(f"Invalid direct rate: {rate}")
-                return None, "Курс недоступен (неверное значение)"
-            redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
-            return amount * rate, rate
-        
-        # Обратный запрос
-        url_reverse = f"https://api.coingecko.com/api/v3/simple/price?ids={to_id}&vs_currencies={from_key}"
-        logger.debug(f"Fetching reverse: {url_reverse}")
-        response_reverse = requests.get(url_reverse, timeout=15).json()
-        logger.info(f"Reverse response: {json.dumps(response_reverse)}")
-        
-        if to_id in response_reverse and from_key in response_reverse[to_id]:
-            rate = 1 / response_reverse[to_id][from_key]
-            if rate <= 0 or rate > 10:  # Проверка на завышенные курсы
-                logger.error(f"Invalid reverse rate: {rate}")
-                return None, "Курс недоступен (неверное значение)"
-            redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
-            return amount * rate, rate
-        
-        # Косвенный курс через USD для всех пар (фиат-фиат, фиат-крипто, крипто-фиат)
         if from_key in CURRENCIES and to_key in CURRENCIES:
             # Обработка USDT как стейблкоина (1 USDT = 1 USD)
             if from_key == 'usdt':
                 rate_from_usd = USDT_TO_USD_FALLBACK  # Фиксированный курс USDT → USD
             else:
-                # Получаем курс от исходной валюты к USD
-                url_from_usd = f"https://api.coingecko.com/api/v3/simple/price?ids={from_id}&vs_currencies=usd"
-                response_from_usd = requests.get(url_from_usd, timeout=15).json()
-                logger.info(f"From USD response: {json.dumps(response_from_usd)}")
-                
-                if from_id in response_from_usd and 'usd' in response_from_usd[from_id]:
-                    rate_from_usd = response_from_usd[from_id]['usd']
-                    if rate_from_usd <= 0 or rate_from_usd > 10:  # Проверка на некорректные значения
-                        logger.error(f"Invalid rate from {from_key} to USD: {rate_from_usd}")
-                        # Резервный фиксированный курс для UAH, если данные отсутствуют
-                        if from_key == 'uah':
-                            logger.warning(f"Using fallback rate for UAH to USD: {UAH_TO_USD_FALLBACK}")
-                            rate_from_usd = UAH_TO_USD_FALLBACK
-                        else:
-                            return None, "Курс недоступен (неверное значение)"
+                # Резервный фиксированный курс для UAH → USD
+                if from_key == 'uah':
+                    logger.warning(f"Using fallback rate for UAH to USD: {UAH_TO_USD_FALLBACK}")
+                    rate_from_usd = UAH_TO_USD_FALLBACK
                 else:
-                    logger.error(f"No rate found for {from_id} to USD")
-                    # Резервный фиксированный курс для UAH, если данные отсутствуют
-                    if from_key == 'uah':
-                        logger.warning(f"Using fallback rate for UAH to USD: {UAH_TO_USD_FALLBACK}")
-                        rate_from_usd = UAH_TO_USD_FALLBACK
-                    else:
-                        return None, "Курс недоступен: данные отсутствуют"
+                    return None, "Курс недоступен: данные отсутствуют"
             
             # Получаем курс от USD к целевой валюте
             if to_key == 'usdt':
                 rate_to_target = USDT_TO_USD_FALLBACK  # Фиксированный курс USD → USDT
+            elif to_key == 'uah':
+                logger.warning(f"Using fallback rate for USD to UAH: {1 / UAH_TO_USDT_FALLBACK}")
+                rate_to_target = 1 / UAH_TO_USDT_FALLBACK  # 1 USD ≈ 41.77 UAH
+            elif to_key == 'eur':
+                logger.warning(f"Using fallback rate for USD to EUR: {USD_TO_EUR_FALLBACK}")
+                rate_to_target = USD_TO_EUR_FALLBACK  # Фиксированный курс USD → EUR
             else:
-                url_to_usd = f"https://api.coingecko.com/api/v3/simple/price?ids=usd&vs_currencies={to_code}"
-                response_to_usd = requests.get(url_to_usd, timeout=15).json()
-                logger.info(f"To USD response: {json.dumps(response_to_usd)}")
-                
-                if 'usd' in response_to_usd and to_code in response_to_usd['usd']:
-                    rate_to_target = response_to_usd['usd'][to_code]
-                    if rate_to_target <= 0 or rate_to_target > 10:  # Проверка на некорректные значения
-                        logger.error(f"Invalid rate from USD to {to_key}: {rate_to_target}")
-                        # Резервный фиксированный курс для EUR, если данные отсутствуют
-                        if to_key == 'eur':
-                            logger.warning(f"Using fallback rate for USD to EUR: {USD_TO_EUR_FALLBACK}")
-                            rate_to_target = USD_TO_EUR_FALLBACK
-                        else:
-                            return None, "Курс недоступен (неверное значение)"
-                else:
-                    logger.error(f"No rate found for USD to {to_id}")
-                    # Резервный фиксированный курс для EUR, если данные отсутствуют
-                    if to_key == 'eur':
-                        logger.warning(f"Using fallback rate for USD to EUR: {USD_TO_EUR_FALLBACK}")
-                        rate_to_target = USD_TO_EUR_FALLBACK
-                    elif to_key == 'uah':
-                        logger.warning(f"Using fallback rate for USDT to UAH: {1 / UAH_TO_USDT_FALLBACK}")
-                        rate_to_target = 1 / UAH_TO_USDT_FALLBACK  # 1 USDT ≈ 41.77 UAH
-                    else:
-                        return None, "Курс недоступен: данные отсутствуют"
+                return None, "Курс недоступен: данные отсутствуют"
             
             # Вычисляем итоговый курс: (1 / rate_from_usd) * rate_to_target
             final_rate = (1 / rate_from_usd) * rate_to_target
-            if final_rate <= 0 or final_rate > 10:  # Дополнительная проверка на завышенные/заниженные курсы
+            if final_rate <= 0 or final_rate > 100:  # Увеличен лимит для больших курсов
                 logger.error(f"Invalid final rate: {final_rate}")
                 return None, "Курс недоступен (неверное значение)"
             
@@ -277,9 +261,9 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
         
         logger.error(f"No rate found for {from_id} to {to_id}")
         return None, "Курс недоступен: данные отсутствуют"
-    except requests.RequestException as e:
-        logger.error(f"API error: {e}")
-        return None, f"Ошибка API: {str(e)}"
+    except Exception as e:
+        logger.error(f"Error with fallback rates: {e}")
+        return None, "Курс недоступен: данные отсутствуют"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await enforce_subscription(update, context):
