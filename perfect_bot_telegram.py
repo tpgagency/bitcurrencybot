@@ -3,7 +3,6 @@ import json
 import time
 import logging
 import requests
-import asyncio
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 import redis
@@ -479,12 +478,9 @@ if __name__ == "__main__":
         redis_client.set('stats', json.dumps({"users": {}, "total_requests": 0, "request_types": {}, "subscriptions": {}, "revenue": 0.0}))
     logger.info("Bot starting...")
     try:
-        # Запустить приложение в асинхронном цикле
-        asyncio.run(
-            set_bot_commands(application)  # Установить команды
-            or application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-        )
+        # Запустить приложение с бесконечным циклом
+        application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
     except NetworkError as e:
         logger.error(f"Network error on start: {e}")
         time.sleep(5)
-        asyncio.run(application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True))
+        application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
