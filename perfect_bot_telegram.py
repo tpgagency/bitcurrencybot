@@ -8,7 +8,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 import redis
 from telegram.error import NetworkError, RetryAfter, TelegramError
 
-# Настройка логирования (максимальная детализация для отладки)
+# Настройка логирования
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -17,7 +17,7 @@ TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CRYPTO_PAY_TOKEN = os.getenv('CRYPTO_PAY_TOKEN')
 REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
 CHANNEL_USERNAME = "@tpgbit"
-BOT_USERNAME = "BitCurrencyBot"  # Замени на имя твоего бота
+BOT_USERNAME = "BitCurrencyBot"
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True, ssl_cert_reqs="none")
 
 if not TELEGRAM_TOKEN:
@@ -30,7 +30,7 @@ if not CRYPTO_PAY_TOKEN:
 AD_MESSAGE = "\n\n📢 Подпишись на @tpgbit для новостей о крипте!"
 FREE_REQUEST_LIMIT = 5
 SUBSCRIPTION_PRICE = 5
-CACHE_TIMEOUT = 5  # Кэш на 5 секунд для реального времени
+CACHE_TIMEOUT = 5
 ADMIN_IDS = ["1058875848", "6403305626"]
 
 # API endpoints
@@ -62,9 +62,9 @@ CURRENCIES = {
     'matic': {'code': 'MATIC'}
 }
 
-# Fallback курсы (только при сбоях API)
-UAH_TO_USDT_FALLBACK = 0.0239  # 1 UAH ≈ 0.0239 USDT
-USDT_TO_UAH_FALLBACK = 41.84   # 1 USDT ≈ 41.84 UAH
+# Fallback курсы
+UAH_TO_USDT_FALLBACK = 0.0239
+USDT_TO_UAH_FALLBACK = 41.84
 
 async def set_bot_commands(application: Application):
     """Устанавливает команды бота в Telegram."""
@@ -153,7 +153,6 @@ def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0)
     to_key = to_currency.lower()
     cache_key = f"rate:{from_key}_{to_key}"
     
-    # Проверка кэша
     cached = redis_client.get(cache_key)
     if cached:
         rate = float(cached)
@@ -201,40 +200,38 @@ def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0)
         rate_from_usdt = None
         rate_usdt_to = None
         
-        # from -> USDT
         if from_key != 'usdt':
             from_usdt_pair = f"{from_code}USDT"
             response_from = requests.get(f"{BINANCE_API_URL}?symbol={from_usdt_pair}", timeout=5).json()
             if 'price' in response_from:
-                rate_from_usdt = float(response_from['price'])  # USDT за 1 from_code
+                rate_from_usdt = float(response_from['price'])
                 logger.debug(f"Binance {from_usdt_pair} = {rate_from_usdt}")
             else:
                 usdt_from_pair = f"USDT{from_code}"
                 response_from_reverse = requests.get(f"{BINANCE_API_URL}?symbol={usdt_from_pair}", timeout=5).json()
                 if 'price' in response_from_reverse:
-                    rate_from_usdt = 1 / float(response_from_reverse['price'])  # Инверсия для USDT/from
+                    rate_from_usdt = 1 / float(response_from_reverse['price'])
                     logger.debug(f"Binance {usdt_from_pair} = {rate_from_usdt} (inverse)")
         else:
             rate_from_usdt = 1.0
         
-        # USDT -> to
         if to_key != 'usdt':
             usdt_to_pair = f"USDT{to_code}"
             response_to = requests.get(f"{BINANCE_API_URL}?symbol={usdt_to_pair}", timeout=5).json()
             if 'price' in response_to:
-                rate_usdt_to = float(response_to['price'])  # to_code за 1 USDT (прямой курс)
+                rate_usdt_to = float(response_to['price'])
                 logger.debug(f"Binance {usdt_to_pair} = {rate_usdt_to}")
             else:
                 to_usdt_pair = f"{to_code}USDT"
                 response_to_reverse = requests.get(f"{BINANCE_API_URL}?symbol={to_usdt_pair}", timeout=5).json()
                 if 'price' in response_to_reverse:
-                    rate_usdt_to = 1 / float(response_to_reverse['price'])  # Инверсия для to/USDT
+                    rate_usdt_to = 1 / float(response_to_reverse['price'])
                     logger.debug(f"Binance {to_usdt_pair} = {rate_usdt_to} (inverse)")
         else:
             rate_usdt_to = 1.0
         
         if rate_from_usdt and rate_usdt_to:
-            rate = rate_from_usdt * rate_usdt_to  # Исправлено: умножение для from -> USDT -> to
+            rate = rate_from_usdt * rate_usdt_to
             if rate <= 0:
                 raise ValueError(f"Invalid Binance calculated rate: {rate}")
             logger.info(f"Binance rate via USDT (real-time): {from_key} to {to_key} = {rate}")
@@ -266,40 +263,37 @@ def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0)
             redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
             return amount * rate, rate
         
-        # Расчёт через USDT
         rate_from_usdt = None
         rate_usdt_to = None
         
-        # from -> USDT
         if from_key != 'usdt':
             from_usdt_pair = f"{from_code}_USDT"
             if from_usdt_pair in response:
-                rate_from_usdt = float(response[from_usdt_pair]['last_price'])  # USDT за 1 from_code
+                rate_from_usdt = float(response[from_usdt_pair]['last_price'])
                 logger.debug(f"WhiteBIT {from_usdt_pair} = {rate_from_usdt}")
             else:
                 usdt_from_pair = f"USDT_{from_code}"
                 if usdt_from_pair in response:
-                    rate_from_usdt = 1 / float(response[usdt_from_pair]['last_price'])  # Инверсия для USDT/from
+                    rate_from_usdt = 1 / float(response[usdt_from_pair]['last_price'])
                     logger.debug(f"WhiteBIT {usdt_from_pair} = {rate_from_usdt} (inverse)")
         else:
             rate_from_usdt = 1.0
         
-        # USDT -> to
         if to_key != 'usdt':
             usdt_to_pair = f"USDT_{to_code}"
             if usdt_to_pair in response:
-                rate_usdt_to = float(response[usdt_to_pair]['last_price'])  # to_code за 1 USDT
+                rate_usdt_to = float(response[usdt_to_pair]['last_price'])
                 logger.debug(f"WhiteBIT {usdt_to_pair} = {rate_usdt_to}")
             else:
                 to_usdt_pair = f"{to_code}_USDT"
                 if to_usdt_pair in response:
-                    rate_usdt_to = 1 / float(response[to_usdt_pair]['last_price'])  # Инверсия для to/USDT
+                    rate_usdt_to = 1 / float(response[to_usdt_pair]['last_price'])
                     logger.debug(f"WhiteBIT {to_usdt_pair} = {rate_usdt_to} (inverse)")
         else:
             rate_usdt_to = 1.0
         
         if rate_from_usdt and rate_usdt_to:
-            rate = rate_from_usdt * rate_usdt_to  # Исправлено: умножение для from -> USDT -> to
+            rate = rate_from_usdt * rate_usdt_to
             if rate <= 0:
                 raise ValueError(f"Invalid WhiteBIT calculated rate: {rate}")
             logger.info(f"WhiteBIT rate via USDT (real-time): {from_key} to {to_key} = {rate}")
@@ -309,7 +303,6 @@ def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0)
     except Exception as e:
         logger.warning(f"WhiteBIT API failed for {from_key} to {to_key}: {e}")
 
-    # Fallback
     try:
         if from_key == 'uah' and to_key == 'usdt':
             rate = UAH_TO_USDT_FALLBACK
@@ -328,7 +321,6 @@ def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0)
         return None, "Курс недоступен: внутренняя ошибка"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /start."""
     if not await enforce_subscription(update, context):
         return
     user_id = str(update.effective_user.id)
@@ -344,14 +336,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def currencies(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /currencies."""
     if not await enforce_subscription(update, context):
         return
     currency_list = ", ".join(sorted(CURRENCIES.keys()))
     await update.effective_message.reply_text(f"Поддерживаемые валюты: {currency_list}")
 
 async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /alert."""
     if not await enforce_subscription(update, context):
         return
     
@@ -372,7 +362,6 @@ async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_message.reply_text(f"Уведомление установлено: {from_currency} → {to_currency} при курсе {target_rate}")
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /stats."""
     user_id = str(update.effective_user.id)
     stats = json.loads(redis_client.get('stats') or '{}')
     users = len(stats.get("users", {}))
@@ -384,7 +373,6 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text(f"Твоя статистика:\nЗапросов сегодня: {stats.get('users', {}).get(user_id, {}).get('requests', 0)}")
 
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /subscribe."""
     if not await enforce_subscription(update, context):
         return
     
@@ -418,7 +406,6 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text("Ошибка связи с платежной системой")
 
 async def referrals(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /referrals."""
     if not await enforce_subscription(update, context):
         return
     user_id = str(update.effective_user.id)
@@ -431,7 +418,6 @@ async def referrals(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает реферальные ссылки."""
     user_id = str(update.effective_user.id)
     args = context.args
     if len(args) == 1 and args[0].startswith("ref_"):
@@ -445,7 +431,6 @@ async def handle_referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.effective_message.reply_text("Ты был приглашён через реферальную ссылку! Спасибо!")
 
 async def check_payment_job(context: ContextTypes.DEFAULT_TYPE):
-    """Периодическая проверка платежей."""
     if not hasattr(context, 'user_data') or not context.user_data:
         logger.debug("No user_data available in context, skipping payment check")
         return
@@ -473,7 +458,6 @@ async def check_payment_job(context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Payment check error for {user_id}: {e}")
 
 async def check_alerts_job(context: ContextTypes.DEFAULT_TYPE):
-    """Периодическая проверка уведомлений."""
     stats = json.loads(redis_client.get('stats') or '{}')
     for user_id in stats.get("users", {}):
         alerts = json.loads(redis_client.get(f"alerts:{user_id}") or '[]')
@@ -488,14 +472,13 @@ async def check_alerts_job(context: ContextTypes.DEFAULT_TYPE):
                 to_code = CURRENCIES[to_currency]['code']
                 await context.bot.send_message(
                     user_id,
-                    f"Уведомление! Курс {from_code} → {to_code} достиг {current_rate:.6f} (цель: {target_rate})"
+                    f"Уведомление! Курс {from_code} → {to_code} достиг {current_rate:.8f} (цель: {target_rate})"
                 )
             else:
                 updated_alerts.append(alert)
         redis_client.set(f"alerts:{user_id}", json.dumps(updated_alerts))
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик текстовых сообщений."""
     if not await enforce_subscription(update, context):
         return
     
@@ -536,9 +519,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             from_code = CURRENCIES[from_currency.lower()]['code']
             to_code = CURRENCIES[to_currency.lower()]['code']
             remaining_display = "∞" if is_subscribed else remaining
+            # Увеличенная точность для криптовалют
+            precision = 8 if to_code in ['BTC', 'ETH', 'XRP', 'DOGE', 'ADA', 'SOL', 'LTC', 'BNB', 'TRX', 'DOT', 'MATIC'] else 6
             await update.effective_message.reply_text(
-                f"{amount:.1f} {from_code} = {result:.6f} {to_code}\n"
-                f"Курс: 1 {from_code} = {rate:.6f} {to_code}\n"
+                f"{amount:.1f} {from_code} = {result:.{precision}f} {to_code}\n"
+                f"Курс: 1 {from_code} = {rate:.{precision}f} {to_code}\n"
                 f"Осталось запросов: {remaining_display}{AD_MESSAGE}"
             )
         else:
@@ -548,7 +533,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.effective_message.reply_text('Примеры: "usd btc" или "100 uah usdt"\nИли используй меню через /start')
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик нажатий на кнопки."""
     query = update.callback_query
     await query.answer()
     user_id = str(query.from_user.id)
@@ -594,10 +578,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 if __name__ == "__main__":
-    """Запуск бота."""
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # Регистрация обработчиков
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("currencies", currencies))
     application.add_handler(CommandHandler("alert", alert))
@@ -609,12 +591,10 @@ if __name__ == "__main__":
     application.job_queue.run_repeating(check_payment_job, interval=60)
     application.job_queue.run_repeating(check_alerts_job, interval=60)
 
-    # Инициализация статистики
     if not redis_client.exists('stats'):
         redis_client.set('stats', json.dumps({"users": {}, "total_requests": 0, "request_types": {}, "subscriptions": {}, "revenue": 0.0}))
     logger.info("Bot starting...")
 
-    # Запуск с обработкой ошибок сети
     while True:
         try:
             application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
