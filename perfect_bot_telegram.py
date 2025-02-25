@@ -62,7 +62,7 @@ CURRENCIES = {
     'matic': {'code': 'MATIC'}
 }
 
-# Фиксированные курсы для fallback (используются только при ошибках API)
+# Фиксированные курсы для fallback
 UAH_TO_USDT_FALLBACK = 0.0239  # 1 UAH ≈ 0.0239 USDT
 USDT_TO_UAH_FALLBACK = 41.84   # 1 USDT ≈ 41.84 UAH
 
