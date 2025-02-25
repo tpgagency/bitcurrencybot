@@ -33,16 +33,20 @@ SUBSCRIPTION_PRICE = 5
 CACHE_TIMEOUT = 120
 ADMIN_IDS = ["1058875848", "6403305626"]
 
+# Binance API базовый URL
+BINANCE_API_URL = "https://api.binance.com/api/v3/ticker/price"
+
+# Поддерживаемые валюты (соответствие кодам Binance)
 CURRENCIES = {
-    'usd': {'id': 'usd', 'code': 'USD'},
-    'uah': {'id': 'uah', 'code': 'UAH'},
-    'eur': {'id': 'eur', 'code': 'EUR'},
-    'rub': {'id': 'rub', 'code': 'RUB'},
-    'jpy': {'id': 'jpy', 'code': 'JPY'},
-    'cny': {'id': 'cny', 'code': 'CNY'},
-    'gbp': {'id': 'gbp', 'code': 'GBP'},
-    'kzt': {'id': 'kzt', 'code': 'KZT'},
-    'try': {'id': 'try', 'code': 'TRY'},
+    'usd': {'id': 'usd', 'code': 'USDT'},  # Binance использует USDT как аналог USD
+    'uah': {'id': 'uah', 'code': 'UAH'},   # UAH нет на Binance, нужен fallback
+    'eur': {'id': 'eur', 'code': 'EUR'},   # EUR есть в некоторых парах
+    'rub': {'id': 'rub', 'code': 'RUB'},   # RUB есть в некоторых парах
+    'jpy': {'id': 'jpy', 'code': 'JPY'},   # JPY есть в некоторых парах
+    'cny': {'id': 'cny', 'code': 'CNY'},   # CNY нет на Binance
+    'gbp': {'id': 'gbp', 'code': 'GBP'},   # GBP есть в некоторых парах
+    'kzt': {'id': 'kzt', 'code': 'KZT'},   # KZT есть в некоторых парах
+    'try': {'id': 'try', 'code': 'TRY'},   # TRY есть в некоторых парах
     'btc': {'id': 'bitcoin', 'code': 'BTC'},
     'eth': {'id': 'ethereum', 'code': 'ETH'},
     'xrp': {'id': 'ripple', 'code': 'XRP'},
@@ -57,14 +61,9 @@ CURRENCIES = {
     'matic': {'id': 'matic-network', 'code': 'MATIC'}
 }
 
-# Фиксированные курсы (актуализированы на февраль 2025 года)
-UAH_TO_USD_FALLBACK = 0.0239  # 1 UAH ≈ 0.0239 USD (по данным Coinbase, KuCoin, Bybit)
-USD_TO_EUR_FALLBACK = 0.952    # 1 USD ≈ 0.952 EUR (по данным Wise, Xe)
-USDT_TO_USD_FALLBACK = 1.0     # 1 USDT = 1 USD (стейблкоин)
-UAH_TO_USDT_FALLBACK = 0.0239  # 1 UAH ≈ 0.0239 USDT (по данным Coinbase, KuCoin, Bybit)
-
-# Таймаут после ошибки 429 (секунд)
-COINGECKO_RATE_LIMIT_TIMEOUT = 60  # Ждать 1 минуту после превышения лимита
+# Фиксированные курсы для валют, отсутствующих на Binance
+UAH_TO_USDT_FALLBACK = 0.0239  # 1 UAH ≈ 0.0239 USDT
+USDT_TO_UAH_FALLBACK = 41.84   # 1 USDT ≈ 41.84 UAH
 
 async def set_bot_commands(application: Application):
     commands = [
@@ -164,6 +163,7 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
     to_key = to_currency.lower()
     cache_key = f"rate:{from_key}_{to_key}"
     
+    # Проверяем кэш
     cached = redis_client.get(cache_key)
     if cached:
         rate = float(cached)
@@ -176,94 +176,100 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
         logger.error(f"Invalid currency: {from_key} or {to_key}")
         return None, "Неподдерживаемая валюта"
     
-    from_id = from_data['id']
-    to_id = to_data['id']
-    to_code = to_data['code'].lower()
-    
-    # Проверка на превышение лимита запросов к CoinGecko
-    rate_limit_blocked_until = redis_client.get('coingecko_rate_limit_blocked_until')
-    if rate_limit_blocked_until and float(rate_limit_blocked_until) > time.time():
-        logger.warning(f"Rate limit exceeded, using fallback rates until {rate_limit_blocked_until}")
-    else:
-        try:
-            # Прямой запрос
-            url = f"https://api.coingecko.com/api/v3/simple/price?ids={from_id}&vs_currencies={to_code}"
-            logger.debug(f"Fetching direct: {url}")
-            response = requests.get(url, timeout=15).json()
-            logger.info(f"Direct response: {json.dumps(response)}")
-            
-            if from_id in response and to_code in response[from_id]:
-                rate = response[from_id][to_code]
-                if rate <= 0 or rate > 100:  # Увеличен лимит для больших курсов
-                    logger.error(f"Invalid direct rate: {rate}")
-                    raise ValueError("Invalid rate")
-                redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
-                return amount * rate, rate
-            
-            # Обратный запрос
-            url_reverse = f"https://api.coingecko.com/api/v3/simple/price?ids={to_id}&vs_currencies={from_key}"
-            logger.debug(f"Fetching reverse: {url_reverse}")
-            response_reverse = requests.get(url_reverse, timeout=15).json()
-            logger.info(f"Reverse response: {json.dumps(response_reverse)}")
-            
-            if to_id in response_reverse and from_key in response_reverse[to_id]:
-                rate = 1 / response_reverse[to_id][from_key]
-                if rate <= 0 or rate > 100:  # Увеличен лимит для больших курсов
-                    logger.error(f"Invalid reverse rate: {rate}")
-                    raise ValueError("Invalid rate")
-                redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
-                return amount * rate, rate
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"API error: {e}")
-        except ValueError as e:
-            logger.error(f"Rate error: {e}")
-        
-        # Проверка на ошибку 429
-        if isinstance(response, dict) and response.get('status', {}).get('error_code') == 429:
-            logger.error("CoinGecko rate limit exceeded (429)")
-            redis_client.setex('coingecko_rate_limit_blocked_until', COINGECKO_RATE_LIMIT_TIMEOUT, time.time() + COINGECKO_RATE_LIMIT_TIMEOUT)
-    
-    # Использование только фиксированных курсов, если API недоступно
+    from_code = from_data['code']
+    to_code = to_data['code']
+
+    # Если обе валюты — USDT, возвращаем 1:1
+    if from_key == 'usdt' and to_key == 'usdt':
+        rate = 1.0
+        redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
+        return amount * rate, rate
+
     try:
-        if from_key in CURRENCIES and to_key in CURRENCIES:
-            # Обработка USDT как стейблкоина (1 USDT = 1 USD)
-            if from_key == 'usdt':
-                rate_from_usd = USDT_TO_USD_FALLBACK  # Фиксированный курс USDT → USD
-            else:
-                # Резервный фиксированный курс для UAH → USD
-                if from_key == 'uah':
-                    logger.warning(f"Using fallback rate for UAH to USD: {UAH_TO_USD_FALLBACK}")
-                    rate_from_usd = UAH_TO_USD_FALLBACK
-                else:
-                    return None, "Курс недоступен: данные отсутствуют"
-            
-            # Получаем курс от USD к целевой валюте
-            if to_key == 'usdt':
-                rate_to_target = USDT_TO_USD_FALLBACK  # Фиксированный курс USD → USDT
-            elif to_key == 'uah':
-                logger.warning(f"Using fallback rate for USD to UAH: {1 / UAH_TO_USDT_FALLBACK}")
-                rate_to_target = 1 / UAH_TO_USDT_FALLBACK  # 1 USD ≈ 41.77 UAH
-            elif to_key == 'eur':
-                logger.warning(f"Using fallback rate for USD to EUR: {USD_TO_EUR_FALLBACK}")
-                rate_to_target = USD_TO_EUR_FALLBACK  # Фиксированный курс USD → EUR
-            else:
-                return None, "Курс недоступен: данные отсутствуют"
-            
-            # Вычисляем итоговый курс: (1 / rate_from_usd) * rate_to_target
-            final_rate = (1 / rate_from_usd) * rate_to_target
-            if final_rate <= 0 or final_rate > 100:  # Увеличен лимит для больших курсов
-                logger.error(f"Invalid final rate: {final_rate}")
-                return None, "Курс недоступен (неверное значение)"
-            
-            redis_client.setex(cache_key, CACHE_TIMEOUT, final_rate)
-            return amount * final_rate, final_rate
+        # Binance работает с парами, например BTCUSDT, ETHBTC
+        # Проверяем прямую пару (from_code + to_code)
+        pair = f"{from_code}{to_code}"
+        response = requests.get(f"{BINANCE_API_URL}?symbol={pair}", timeout=15).json()
         
-        logger.error(f"No rate found for {from_id} to {to_id}")
-        return None, "Курс недоступен: данные отсутствуют"
+        if 'price' in response:
+            rate = float(response['price'])
+            if rate <= 0:
+                logger.error(f"Invalid rate for {pair}: {rate}")
+                raise ValueError("Invalid rate")
+            logger.info(f"Direct rate from Binance: {pair} = {rate}")
+            redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
+            return amount * rate, rate
+        
+        # Если прямой пары нет, пробуем обратную (to_code + from_code)
+        reverse_pair = f"{to_code}{from_code}"
+        response = requests.get(f"{BINANCE_API_URL}?symbol={reverse_pair}", timeout=15).json()
+        
+        if 'price' in response:
+            rate = 1 / float(response['price'])
+            if rate <= 0:
+                logger.error(f"Invalid reverse rate for {reverse_pair}: {rate}")
+                raise ValueError("Invalid rate")
+            logger.info(f"Reverse rate from Binance: {reverse_pair} = {rate}")
+            redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
+            return amount * rate, rate
+        
+        # Если пары нет, используем USDT как промежуточную валюту
+        if from_key != 'usdt':
+            from_usdt_pair = f"{from_code}USDT"
+            response_from = requests.get(f"{BINANCE_API_URL}?symbol={from_usdt_pair}", timeout=15).json()
+            if 'price' in response_from:
+                rate_from_usdt = float(response_from['price'])
+            else:
+                # Fallback для UAH или других неподдерживаемых валют
+                if from_key == 'uah':
+                    rate_from_usdt = UAH_TO_USDT_FALLBACK
+                else:
+                    raise ValueError("No direct pair or USDT pair available")
+        else:
+            rate_from_usdt = 1.0
+
+        if to_key != 'usdt':
+            to_usdt_pair = f"{to_code}USDT"
+            response_to = requests.get(f"{BINANCE_API_URL}?symbol={to_usdt_pair}", timeout=15).json()
+            if 'price' in response_to:
+                rate_to_usdt = float(response_to['price'])
+            else:
+                # Fallback для UAH
+                if to_key == 'uah':
+                    rate_to_usdt = 1 / USDT_TO_UAH_FALLBACK
+                else:
+                    raise ValueError("No direct pair or USDT pair available")
+        else:
+            rate_to_usdt = 1.0
+        
+        # Вычисляем курс через USDT
+        rate = rate_from_usdt / rate_to_usdt
+        if rate <= 0:
+            logger.error(f"Invalid calculated rate: {rate}")
+            raise ValueError("Invalid rate")
+        
+        logger.info(f"Calculated rate via USDT: {from_key} to {to_key} = {rate}")
+        redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
+        return amount * rate, rate
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Binance API error: {e}")
+        # Fallback для UAH
+        if from_key == 'uah' and to_key == 'usdt':
+            rate = UAH_TO_USDT_FALLBACK
+            redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
+            return amount * rate, rate
+        elif from_key == 'usdt' and to_key == 'uah':
+            rate = USDT_TO_UAH_FALLBACK
+            redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
+            return amount * rate, rate
+        return None, "Курс недоступен: ошибка API"
+    except ValueError as e:
+        logger.error(f"Rate calculation error: {e}")
+        return None, "Курс недоступен: неверное значение"
     except Exception as e:
-        logger.error(f"Error with fallback rates: {e}")
-        return None, "Курс недоступен: данные отсутствуют"
+        logger.error(f"Unexpected error: {e}")
+        return None, "Курс недоступен: внутренняя ошибка"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await enforce_subscription(update, context):
