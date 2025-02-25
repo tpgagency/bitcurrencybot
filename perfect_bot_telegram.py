@@ -57,8 +57,10 @@ CURRENCIES = {
     'matic': {'id': 'matic-network', 'code': 'MATIC'}
 }
 
-# Фиксированный курс UAH → USD (пример, обновляй регулярно)
-UAH_TO_USD_FALLBACK = 0.025  # 1 UAH ≈ 0.025 USD (проверь актуальный курс)
+# Фиксированные курсы (актуализированы на февраль 2025 года)
+UAH_TO_USD_FALLBACK = 0.0239  # 1 UAH ≈ 0.0239 USD (по данным Coinbase, KuCoin, Bybit)
+USD_TO_EUR_FALLBACK = 0.952    # 1 USD ≈ 0.952 EUR (по данным Wise, Xe)
+USDT_TO_USD_FALLBACK = 1.0     # 1 USDT = 1 USD (стейблкоин)
 
 async def set_bot_commands(application: Application):
     commands = [
@@ -207,7 +209,7 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
         if from_key in CURRENCIES and to_key in CURRENCIES:
             # Обработка USDT как стейблкоина (1 USDT = 1 USD)
             if from_key == 'usdt':
-                rate_from_usd = 1.0  # Фиксированный курс USDT → USD
+                rate_from_usd = USDT_TO_USD_FALLBACK  # Фиксированный курс USDT → USD
             else:
                 # Получаем курс от исходной валюты к USD
                 url_from_usd = f"https://api.coingecko.com/api/v3/simple/price?ids={from_id}&vs_currencies=usd"
@@ -235,7 +237,7 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
             
             # Получаем курс от USD к целевой валюте
             if to_key == 'usdt':
-                rate_to_target = 1.0  # Фиксированный курс USD → USDT
+                rate_to_target = USDT_TO_USD_FALLBACK  # Фиксированный курс USD → USDT
             else:
                 url_to_usd = f"https://api.coingecko.com/api/v3/simple/price?ids=usd&vs_currencies={to_code}"
                 response_to_usd = requests.get(url_to_usd, timeout=15).json()
@@ -245,16 +247,26 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
                     rate_to_target = response_to_usd['usd'][to_code]
                     if rate_to_target <= 0:
                         logger.error(f"Invalid rate from USD to {to_key}: {rate_to_target}")
-                        return None, "Курс недоступен (нулевое значение)"
+                        # Резервный фиксированный курс для EUR, если данные отсутствуют
+                        if to_key == 'eur':
+                            logger.warning(f"Using fallback rate for USD to EUR: {USD_TO_EUR_FALLBACK}")
+                            rate_to_target = USD_TO_EUR_FALLBACK
+                        else:
+                            return None, "Курс недоступен (нулевое значение)"
                 else:
                     logger.error(f"No rate found for USD to {to_id}")
-                    return None, "Курс недоступен: данные отсутствуют"
+                    # Резервный фиксированный курс для EUR, если данные отсутствуют
+                    if to_key == 'eur':
+                        logger.warning(f"Using fallback rate for USD to EUR: {USD_TO_EUR_FALLBACK}")
+                        rate_to_target = USD_TO_EUR_FALLBACK
+                    else:
+                        return None, "Курс недоступен: данные отсутствуют"
             
             # Вычисляем итоговый курс: (1 / rate_from_usd) * rate_to_target
             final_rate = (1 / rate_from_usd) * rate_to_target
-            if final_rate <= 0:
+            if final_rate <= 0 or final_rate > 1000:  # Дополнительная проверка на завышенные курсы
                 logger.error(f"Invalid final rate: {final_rate}")
-                return None, "Курс недоступен (нулевое значение)"
+                return None, "Курс недоступен (неверное значение)"
             
             redis_client.setex(cache_key, CACHE_TIMEOUT, final_rate)
             return amount * final_rate, final_rate
