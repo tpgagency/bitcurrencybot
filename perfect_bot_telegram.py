@@ -4,7 +4,7 @@ import time
 import logging
 import requests
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 import redis
 from telegram.error import NetworkError, RetryAfter, TelegramError
 from collections import deque
@@ -732,7 +732,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "price":
         await query.edit_message_text(
             "📈 *Введи валюту для проверки текущей цены, например: \"btc usd\"*",
-        parse_mode=ParseMode.MARKDOWN
+            parse_mode=ParseMode.MARKDOWN
         )
     elif action == "stats":
         users = len(stats.get("users", {}))
@@ -840,10 +840,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
 if __name__ == "__main__":
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
-
-    # Инициализация JobQueue
-    application.job_queue = application.job_queue  # Убедимся, что JobQueue инициализирован
+    # Используем ApplicationBuilder для создания приложения с JobQueue
+    application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("currencies", currencies))
