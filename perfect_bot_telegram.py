@@ -6,7 +6,7 @@ import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import redis
-from telegram.error import NetworkError, RetryAfter
+from telegram.error import NetworkError, RetryAfter, TelegramError
 
 # Настройка логирования
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CRYPTO_PAY_TOKEN = os.getenv('CRYPTO_PAY_TOKEN')
 REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
+CHANNEL_USERNAME = "@tpgbit"  # Username твоего канала
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True, ssl_cert_reqs="none")
 
 if not TELEGRAM_TOKEN:
@@ -25,7 +26,7 @@ if not CRYPTO_PAY_TOKEN:
     logger.error("CRYPTO_PAY_TOKEN not set")
     exit(1)
 
-AD_MESSAGE = "\n\n📢 Реклама: Подпишись на @tpgbit для новостей о крипте!"
+AD_MESSAGE = f"\n\n📢 Подпишись на {CHANNEL_USERNAME} для новостей о крипте!"
 FREE_REQUEST_LIMIT = 5
 SUBSCRIPTION_PRICE = 5
 CACHE_TIMEOUT = 120
@@ -49,6 +50,32 @@ CURRENCIES = {
     'лайткоин': {'id': 'litecoin', 'code': 'LTC'}, 'лайткоины': {'id': 'litecoin', 'code': 'LTC'}, 'ltc': {'id': 'litecoin', 'code': 'LTC'}
 }
 
+async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    user_id = update.message.from_user.id
+    try:
+        chat_member = await context.bot.get_chat_member(CHANNEL_USERNAME, user_id)
+        status = chat_member.status
+        if status in ['member', 'administrator', 'creator']:
+            logger.debug(f"User {user_id} is subscribed to {CHANNEL_USERNAME}")
+            return True
+        logger.debug(f"User {user_id} is not subscribed to {CHANNEL_USERNAME}, status: {status}")
+        return False
+    except TelegramError as e:
+        logger.error(f"Error checking subscription for {user_id}: {e}")
+        await update.message.reply_text(
+            "Не могу проверить подписку. Убедись, что бот — админ в канале @tpgbit, и попробуй снова."
+        )
+        return False
+
+async def enforce_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    if await check_subscription(update, context):
+        return True
+    await update.message.reply_text(
+        f"Чтобы пользоваться ботом, подпишись на {CHANNEL_USERNAME}!\n"
+        "После подписки повтори команду."
+    )
+    return False
+
 def save_stats(user_id, request_type):
     try:
         stats = json.loads(redis_client.get('stats') or '{}')
@@ -65,6 +92,7 @@ def save_stats(user_id, request_type):
         user_data["requests"] += 1
         stats["users"] = users
         stats["total_requests"] = stats.get("total_requests", 0) + 1
+        stats["request_types"] = stats.get("request_types", {})
         stats["request_types"][request_type] = stats["request_types"].get(request_type, 0) + 1
         redis_client.set('stats', json.dumps(stats))
         logger.debug(f"Stats updated: {user_id} - {request_type}")
@@ -147,6 +175,9 @@ def get_exchange_rate(from_currency, to_currency, amount=1):
         return None, f"Ошибка API: {str(e)}"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await enforce_subscription(update, context):
+        return
+    
     user_id = str(update.message.from_user.id)
     save_stats(user_id, "start")
     logger.info(f"User {user_id} started bot")
@@ -158,6 +189,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await enforce_subscription(update, context):
+        return
+    
     user_id = str(update.message.from_user.id)
     stats = json.loads(redis_client.get('stats') or '{}')
     if stats.get("subscriptions", {}).get(user_id, False):
@@ -167,7 +201,7 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     headers = {'Crypto-Pay-API-Token': CRYPTO_PAY_TOKEN}
     payload = {
-        "asset": "USDT",  # Заменили "currency" на "asset"
+        "asset": "USDT",
         "amount": str(SUBSCRIPTION_PRICE),
         "description": f"Подписка для {user_id}"
     }
@@ -181,12 +215,6 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard = [[InlineKeyboardButton(f"Оплатить {SUBSCRIPTION_PRICE} USDT", url=pay_url)]]
             context.user_data[user_id] = {"invoice_id": invoice_id}
             await update.message.reply_text(f"Оплати {SUBSCRIPTION_PRICE} USDT:", reply_markup=InlineKeyboardMarkup(keyboard))
-        else:
-            logger.error(f"Invoice failed: {response}")
-            await update.message.reply_text(f"Ошибка платежа: {response.get('error', 'Неизвестная ошибка')}")
-    except requests.RequestException as e:
-        logger.error(f"Subscribe error: {e}")
-        await update.message.reply_text("Ошибка связи с платежной системой")
         else:
             logger.error(f"Invoice failed: {response}")
             await update.message.reply_text(f"Ошибка платежа: {response.get('error', 'Неизвестная ошибка')}")
@@ -222,6 +250,9 @@ async def check_payment_job(context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Payment check error for {user_id}: {e}")
 
 async def kurs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await enforce_subscription(update, context):
+        return
+    
     user_id = str(update.message.from_user.id)
     args = context.args
     
@@ -271,6 +302,9 @@ async def kurs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Ошибка ввода. Примеры: '/kurs usd btc'")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await enforce_subscription(update, context):
+        return
+    
     user_id = str(update.message.from_user.id)
     if 'last_request' in context.user_data and time.time() - context.user_data['last_request'] < 1:
         await update.message.reply_text("Подожди секунду!")
