@@ -4,7 +4,7 @@ import time
 import logging
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes  # Добавлен CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 import redis
 from telegram.error import NetworkError, RetryAfter, TelegramError
 
@@ -343,18 +343,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         parts = text.split()
         if len(parts) < 2:
-            raise ValueError
+            raise ValueError("Недостаточно аргументов")
         if parts[0].replace('.', '', 1).isdigit():
             amount = float(parts[0])
             from_currency, to_currency = parts[1], parts[2]
+            logger.debug(f"Parsed: amount={amount}, from={from_currency}, to={to_currency}")
         else:
             amount = 1
             from_currency, to_currency = parts[0], parts[1]
+            logger.debug(f"Parsed: amount={amount}, from={from_currency}, to={to_currency}")
         
         save_stats(user_id, f"{from_currency}_to_{to_currency}")
         result, rate = get_exchange_rate(from_currency, to_currency, amount)
         if result:
-            from_code = CURENCIES[from_currency.lower()]['code']
+            from_code = CURRENCIES[from_currency.lower()]['code']  # Исправлено CURENCIES на CURRENCIES
             to_code = CURRENCIES[to_currency.lower()]['code']
             remaining_display = "∞" if user_id in ADMIN_IDS or stats.get("subscriptions", {}).get(user_id, False) else remaining
             await update.message.reply_text(
