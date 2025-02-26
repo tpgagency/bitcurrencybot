@@ -10,22 +10,19 @@ from telegram.error import NetworkError, RetryAfter, TelegramError
 from collections import deque
 from telegram.constants import ParseMode
 
-# Настройка логирования с записью в файл для удобства анализа
+# Настройка логирования с записью в файл
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),  # Логи в консоль
-        logging.FileHandler('bot.log')  # Логи в файл для проверки
-    ]
+    handlers=[logging.StreamHandler(), logging.FileHandler('bot.log')]
 )
 logger = logging.getLogger(__name__)
 
-# Конфигурация (сохранена без изменений, но добавлены комментарии)
+# Конфигурация
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CRYPTO_PAY_TOKEN = os.getenv('CRYPTO_PAY_TOKEN')
 REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
-CHANNEL_USERNAME = "@tpgbit"  # Обязательный канал для подписки
+CHANNEL_USERNAME = "@tpgbit"
 BOT_USERNAME = "BitCurrencyBot"
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True, ssl_cert_reqs="none")
 
@@ -36,18 +33,18 @@ if not CRYPTO_PAY_TOKEN:
     logger.error("CRYPTO_PAY_TOKEN not set")
     exit(1)
 
-AD_MESSAGE = "\n\n📢 Подпишись на @tpgbit для новостей о крипте!"  # Сообщение с каналом
-FREE_REQUEST_LIMIT = 5  # Лимит 5 запросов для не-подписчиков
-SUBSCRIPTION_PRICE = 5  # Цена подписки
-CACHE_TIMEOUT = 5  # Время кэша курсов
-ADMIN_IDS = ["1058875848", "6403305626"]  # Безлимит для этих пользователей
-HISTORY_LIMIT = 10  # Лимит истории
+AD_MESSAGE = "\n\n📢 Подпишись на @tpgbit для новостей о крипте!"
+FREE_REQUEST_LIMIT = 5
+SUBSCRIPTION_PRICE = 5
+CACHE_TIMEOUT = 5
+ADMIN_IDS = ["1058875848", "6403305626"]
+HISTORY_LIMIT = 10
 
-# API endpoints (сохранены без изменений)
+# API endpoints
 BINANCE_API_URL = "https://api.binance.com/api/v3/ticker/price"
 WHITEBIT_API_URL = "https://whitebit.com/api/v1/public/ticker"
 
-# Поддерживаемые валюты (сохранены без изменений)
+# Поддерживаемые валюты
 CURRENCIES = {
     'usd': {'code': 'USDT'},
     'uah': {'code': 'UAH'},
@@ -72,20 +69,19 @@ CURRENCIES = {
     'matic': {'code': 'MATIC'}
 }
 
-# Fallback курсы (сохранены без изменений)
+# Fallback курсы
 UAH_TO_USDT_FALLBACK = 0.0239
 USDT_TO_UAH_FALLBACK = 41.84
 
 # Проверка подключения к Redis
 try:
-    redis_client.ping()  # Проверяем, работает ли Redis
+    redis_client.ping()
     logger.info("Connected to Redis successfully")
 except redis.ConnectionError as e:
     logger.error(f"Failed to connect to Redis: {e}")
     exit(1)
 
 async def set_bot_commands(application: Application):
-    """Установка команд с обработкой ошибок."""
     commands = [
         ("start", "Главное меню"),
         ("currencies", "Список валют"),
@@ -102,7 +98,6 @@ async def set_bot_commands(application: Application):
         logger.error(f"Failed to set bot commands: {e}")
 
 async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Проверка подписки на @tpgbit с детальным логированием."""
     user_id = str(update.effective_user.id)
     try:
         chat_member = await context.bot.get_chat_member(CHANNEL_USERNAME, user_id)
@@ -118,7 +113,6 @@ async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return False
 
 async def enforce_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Обязательная проверка подписки (сохранена логика)."""
     if await check_subscription(update, context):
         return True
     await update.effective_message.reply_text(
@@ -128,7 +122,6 @@ async def enforce_subscription(update: Update, context: ContextTypes.DEFAULT_TYP
     return False
 
 def save_stats(user_id: str, request_type: str):
-    """Сохранение статистики с TTL для Redis."""
     try:
         stats = json.loads(redis_client.get('stats') or '{}')
         current_day = time.strftime("%Y-%m-%d")
@@ -143,13 +136,12 @@ def save_stats(user_id: str, request_type: str):
         stats["total_requests"] = stats.get("total_requests", 0) + 1
         stats["request_types"] = stats.get("request_types", {})
         stats["request_types"][request_type] = stats["request_types"].get(request_type, 0) + 1
-        redis_client.setex('stats', 24 * 60 * 60, json.dumps(stats))  # Кэш на 24 часа
+        redis_client.setex('stats', 24 * 60 * 60, json.dumps(stats))
         logger.debug(f"Stats updated: {user_id} - {request_type}")
     except Exception as e:
         logger.error(f"Error saving stats: {e}")
 
 def save_history(user_id: str, from_currency: str, to_currency: str, amount: float, result: float):
-    """Сохранение истории с TTL."""
     try:
         history = json.loads(redis_client.get(f"history:{user_id}") or '[]')
         history = deque(history, maxlen=HISTORY_LIMIT)
@@ -160,15 +152,14 @@ def save_history(user_id: str, from_currency: str, to_currency: str, amount: flo
             "amount": amount,
             "result": result
         })
-        redis_client.setex(f"history:{user_id}", 30 * 24 * 60 * 60, json.dumps(list(history)))  # Кэш на 30 дней
+        redis_client.setex(f"history:{user_id}", 30 * 24 * 60 * 60, json.dumps(list(history)))
         logger.debug(f"History updated for {user_id}")
     except Exception as e:
         logger.error(f"Error saving history for {user_id}: {e}")
 
 def check_limit(user_id: str) -> tuple[bool, str]:
-    """Проверка лимита (сохранена логика для ADMIN_IDS)."""
     try:
-        if user_id in ADMIN_IDS:  # Безлимит для 1058875848, 6403305626
+        if user_id in ADMIN_IDS:
             logger.debug(f"Admin {user_id} - unlimited access")
             return True, "∞"
         
@@ -187,7 +178,6 @@ def check_limit(user_id: str) -> tuple[bool, str]:
         return False, "0"
 
 def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0) -> tuple[float, float] | tuple[None, str]:
-    """Получение курса с улучшенной обработкой ошибок."""
     from_key = from_currency.lower()
     to_key = to_currency.lower()
     cache_key = f"rate:{from_key}_{to_key}"
@@ -212,7 +202,7 @@ def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0)
         redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
         return amount * rate, rate
 
-    # Binance API с таймаутом и обработкой ошибок
+    # Binance прямой курс
     try:
         pair = f"{from_code}{to_code}"
         response = requests.get(f"{BINANCE_API_URL}?symbol={pair}", timeout=5).json()
@@ -220,13 +210,73 @@ def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0)
             rate = float(response['price'])
             if rate <= 0:
                 raise ValueError(f"Invalid Binance rate for {pair}: {rate}")
-            logger.info(f"Binance direct rate (real-time): {pair} = {rate}")
+            logger.info(f"Binance direct rate: {pair} = {rate}")
             redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
             return amount * rate, rate
     except (requests.RequestException, ValueError, KeyError) as e:
-        logger.warning(f"Binance API failed for {from_key} to {to_key}: {e}")
+        logger.warning(f"Binance direct failed for {from_key} to {to_key}: {e}")
 
-    # WhiteBIT API с таймаутом и обработкой ошибок
+    # Binance обратный курс
+    try:
+        reverse_pair = f"{to_code}{from_code}"
+        response = requests.get(f"{BINANCE_API_URL}?symbol={reverse_pair}", timeout=5).json()
+        if 'price' in response:
+            reverse_rate = float(response['price'])
+            if reverse_rate <= 0:
+                raise ValueError(f"Invalid Binance reverse rate for {reverse_pair}: {reverse_rate}")
+            rate = 1 / reverse_rate
+            logger.info(f"Binance reverse rate: {reverse_pair} = {rate}")
+            redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
+            return amount * rate, rate
+    except (requests.RequestException, ValueError, KeyError) as e:
+        logger.warning(f"Binance reverse failed for {from_key} to {to_key}: {e}")
+
+    # Binance через USDT
+    try:
+        rate_from_usdt = None
+        rate_to_usdt = None
+        
+        if from_key != 'usdt':
+            from_usdt_pair = f"{from_code}USDT"
+            response_from = requests.get(f"{BINANCE_API_URL}?symbol={from_usdt_pair}", timeout=5).json()
+            if 'price' in response_from:
+                rate_from_usdt = float(response_from['price'])
+                logger.debug(f"Binance {from_usdt_pair} = {rate_from_usdt}")
+            else:
+                usdt_from_pair = f"USDT{from_code}"
+                response_from_reverse = requests.get(f"{BINANCE_API_URL}?symbol={usdt_from_pair}", timeout=5).json()
+                if 'price' in response_from_reverse:
+                    rate_from_usdt = 1 / float(response_from_reverse['price'])
+                    logger.debug(f"Binance {usdt_from_pair} (inverse) = {rate_from_usdt}")
+        else:
+            rate_from_usdt = 1.0
+
+        if to_key != 'usdt':
+            to_usdt_pair = f"USDT{to_code}"
+            response_to = requests.get(f"{BINANCE_API_URL}?symbol={to_usdt_pair}", timeout=5).json()
+            if 'price' in response_to:
+                rate_to_usdt = float(response_to['price'])
+                logger.debug(f"Binance {to_usdt_pair} = {rate_to_usdt}")
+            else:
+                usdt_to_pair = f"{to_code}USDT"
+                response_to_reverse = requests.get(f"{BINANCE_API_URL}?symbol={usdt_to_pair}", timeout=5).json()
+                if 'price' in response_to_reverse:
+                    rate_to_usdt = 1 / float(response_to_reverse['price'])
+                    logger.debug(f"Binance {usdt_to_pair} (inverse) = {rate_to_usdt}")
+        else:
+            rate_to_usdt = 1.0
+
+        if rate_from_usdt and rate_to_usdt:
+            rate = rate_from_usdt / rate_to_usdt if to_key != 'usdt' else rate_from_usdt
+            if rate <= 0:
+                raise ValueError(f"Invalid Binance calculated rate for {from_key} to {to_key}: {rate}")
+            logger.info(f"Binance via USDT: {from_key} to {to_key} = {rate}")
+            redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
+            return amount * rate, rate
+    except (requests.RequestException, ValueError, KeyError) as e:
+        logger.warning(f"Binance via USDT failed for {from_key} to {to_key}: {e}")
+
+    # WhiteBIT прямой курс
     try:
         response = requests.get(WHITEBIT_API_URL, timeout=5).json()
         pair_key = f"{from_code}_{to_code}"
@@ -234,11 +284,66 @@ def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0)
             rate = float(response[pair_key]['last_price'])
             if rate <= 0:
                 raise ValueError(f"Invalid WhiteBIT rate for {pair_key}: {rate}")
-            logger.info(f"WhiteBIT direct rate (real-time): {pair_key} = {rate}")
+            logger.info(f"WhiteBIT direct rate: {pair_key} = {rate}")
             redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
             return amount * rate, rate
     except (requests.RequestException, ValueError, KeyError) as e:
-        logger.warning(f"WhiteBIT API failed for {from_key} to {to_key}: {e}")
+        logger.warning(f"WhiteBIT direct failed for {from_key} to {to_key}: {e}")
+
+    # WhiteBIT обратный курс
+    try:
+        reverse_pair_key = f"{to_code}_{from_code}"
+        if reverse_pair_key in response:
+            reverse_rate = float(response[reverse_pair_key]['last_price'])
+            if reverse_rate <= 0:
+                raise ValueError(f"Invalid WhiteBIT reverse rate for {reverse_pair_key}: {reverse_rate}")
+            rate = 1 / reverse_rate
+            logger.info(f"WhiteBIT reverse rate: {reverse_pair_key} = {rate}")
+            redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
+            return amount * rate, rate
+    except (requests.RequestException, ValueError, KeyError) as e:
+        logger.warning(f"WhiteBIT reverse failed for {from_key} to {to_key}: {e}")
+
+    # WhiteBIT через USDT
+    try:
+        rate_from_usdt = None
+        rate_to_usdt = None
+        
+        if from_key != 'usdt':
+            from_usdt_pair = f"{from_code}_USDT"
+            if from_usdt_pair in response:
+                rate_from_usdt = float(response[from_usdt_pair]['last_price'])
+                logger.debug(f"WhiteBIT {from_usdt_pair} = {rate_from_usdt}")
+            else:
+                usdt_from_pair = f"USDT_{from_code}"
+                if usdt_from_pair in response:
+                    rate_from_usdt = 1 / float(response[usdt_from_pair]['last_price'])
+                    logger.debug(f"WhiteBIT {usdt_from_pair} (inverse) = {rate_from_usdt}")
+        else:
+            rate_from_usdt = 1.0
+
+        if to_key != 'usdt':
+            to_usdt_pair = f"USDT_{to_code}"
+            if to_usdt_pair in response:
+                rate_to_usdt = float(response[to_usdt_pair]['last_price'])
+                logger.debug(f"WhiteBIT {to_usdt_pair} = {rate_to_usdt}")
+            else:
+                usdt_to_pair = f"{to_code}_USDT"
+                if usdt_to_pair in response:
+                    rate_to_usdt = 1 / float(response[usdt_to_pair]['last_price'])
+                    logger.debug(f"WhiteBIT {usdt_to_pair} (inverse) = {rate_to_usdt}")
+        else:
+            rate_to_usdt = 1.0
+
+        if rate_from_usdt and rate_to_usdt:
+            rate = rate_from_usdt / rate_to_usdt if to_key != 'usdt' else rate_from_usdt
+            if rate <= 0:
+                raise ValueError(f"Invalid WhiteBIT calculated rate for {from_key} to {to_key}: {rate}")
+            logger.info(f"WhiteBIT via USDT: {from_key} to {to_key} = {rate}")
+            redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
+            return amount * rate, rate
+    except (requests.RequestException, ValueError, KeyError) as e:
+        logger.warning(f"WhiteBIT via USDT failed for {from_key} to {to_key}: {e}")
 
     # Fallback для UAH-USDT
     try:
@@ -259,9 +364,7 @@ def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0)
         return None, "Курс недоступен: внутренняя ошибка"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Функция старта с улучшенным логированием ошибок."""
     if not await enforce_subscription(update, context):
-        logger.debug(f"User {update.effective_user.id} blocked by subscription")
         return
     user_id = str(update.effective_user.id)
     save_stats(user_id, "start")
@@ -290,7 +393,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error sending start message to {user_id}: {e}")
 
 async def currencies(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Список валют с улучшенным логированием ошибок."""
     if not await enforce_subscription(update, context):
         return
     currency_list = ", ".join(sorted(CURRENCIES.keys()))
@@ -308,7 +410,6 @@ async def currencies(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error sending currencies to {update.effective_user.id}: {e}")
 
 async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Уведомления с улучшенной обработкой ошибок."""
     if not await enforce_subscription(update, context):
         return
     
@@ -345,7 +446,7 @@ async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     alerts = json.loads(redis_client.get(f"alerts:{user_id}") or '[]')
     alerts.append({"from": from_currency, "to": to_currency, "target": target_rate})
-    redis_client.setex(f"alerts:{user_id}", 30 * 24 * 60 * 60, json.dumps(alerts))  # TTL на 30 дней
+    redis_client.setex(f"alerts:{user_id}", 30 * 24 * 60 * 60, json.dumps(alerts))
     keyboard = [
         [InlineKeyboardButton("🔔 Добавить ещё", callback_data="alert"),
          InlineKeyboardButton("🔙 Назад", callback_data="start")]
@@ -361,7 +462,6 @@ async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error sending alert confirmation to {user_id}: {e}")
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Статистика с улучшенным логированием ошибок."""
     user_id = str(update.effective_user.id)
     if not await enforce_subscription(update, context):
         return
@@ -375,7 +475,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     try:
-        if user_id in ADMIN_IDS:  # Сохранена логика для администраторов
+        if user_id in ADMIN_IDS:
             await update.effective_message.reply_text(
                 f"📊 *Админ-статистика:*\n👥 Пользователей: *{users}*\n📈 Запросов: *{requests}*\n💰 Доход: *{revenue} USDT*",
                 reply_markup=reply_markup,
@@ -391,7 +491,6 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error sending stats to {user_id}: {e}")
 
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Подписка с улучшенной обработкой ошибок."""
     if not await enforce_subscription(update, context):
         return
     
@@ -447,7 +546,6 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 async def referrals(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Рефералы с улучшенным логированием ошибок."""
     if not await enforce_subscription(update, context):
         return
     user_id = str(update.effective_user.id)
@@ -470,7 +568,6 @@ async def referrals(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error sending referrals to {user_id}: {e}")
 
 async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """История запросов с улучшенным логированием ошибок."""
     if not await enforce_subscription(update, context):
         return
     user_id = str(update.effective_user.id)
@@ -503,7 +600,6 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error sending history to {user_id}: {e}")
 
 async def handle_referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка рефералов с улучшенным логированием ошибок."""
     user_id = str(update.effective_user.id)
     args = context.args
     if len(args) == 1 and args[0].startswith("ref_"):
@@ -512,7 +608,7 @@ async def handle_referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
             referrals = json.loads(redis_client.get(f"referrals:{referrer_id}") or '[]')
             if user_id not in referrals:
                 referrals.append(user_id)
-                redis_client.setex(f"referrals:{referrer_id}", 30 * 24 * 60 * 60, json.dumps(referrals))  # TTL на 30 дней
+                redis_client.setex(f"referrals:{referrer_id}", 30 * 24 * 60 * 60, json.dumps(referrals))
                 logger.info(f"New referral: {user_id} for {referrer_id}")
                 try:
                     await update.effective_message.reply_text(
@@ -523,7 +619,6 @@ async def handle_referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     logger.error(f"Error sending referral message to {user_id}: {e}")
 
 async def check_payment_job(context: ContextTypes.DEFAULT_TYPE):
-    """Проверка платежей с улучшенным логированием и обработкой ошибок."""
     try:
         if not hasattr(context, 'user_data') or not context.user_data:
             logger.debug("No user_data available in context, skipping payment check")
@@ -544,7 +639,7 @@ async def check_payment_job(context: ContextTypes.DEFAULT_TYPE):
                         stats = json.loads(redis_client.get('stats') or '{}')
                         stats.setdefault("subscriptions", {})[user_id] = True
                         stats["revenue"] = stats.get("revenue", 0.0) + SUBSCRIPTION_PRICE
-                        redis_client.setex('stats', 30 * 24 * 60 * 60, json.dumps(stats))  # TTL на 30 дней
+                        redis_client.setex('stats', 30 * 24 * 60 * 60, json.dumps(stats))
                         del context.user_data[user_id]
                         logger.info(f"Payment confirmed for {user_id}")
                         try:
@@ -561,7 +656,6 @@ async def check_payment_job(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Payment check error: {e}")
 
 async def check_alerts_job(context: ContextTypes.DEFAULT_TYPE):
-    """Проверка алертов с улучшенным логированием и обработкой ошибок."""
     try:
         stats = json.loads(redis_client.get('stats') or '{}')
         for user_id in stats.get("users", {}):
@@ -585,15 +679,13 @@ async def check_alerts_job(context: ContextTypes.DEFAULT_TYPE):
                         logger.error(f"Error sending alert to {user_id}: {e}")
                 else:
                     updated_alerts.append(alert)
-            redis_client.setex(f"alerts:{user_id}", 30 * 24 * 60 * 60, json.dumps(updated_alerts))  # TTL на 30 дней
+            redis_client.setex(f"alerts:{user_id}", 30 * 24 * 60 * 60, json.dumps(updated_alerts))
             logger.debug(f"Checked alerts for user {user_id}")
     except Exception as e:
         logger.error(f"Alerts check error: {e}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка сообщений с улучшенной обработкой ошибок."""
     if not await enforce_subscription(update, context):
-        logger.debug(f"User {update.effective_user.id} blocked by subscription")
         return
     
     user_id = str(update.effective_user.id)
@@ -688,7 +780,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Error sending example message to {user_id}: {e}")
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка кнопок с улучшенным логированием и обработкой ошибок."""
     query = update.callback_query
     try:
         await query.answer(text="🌟 Обработка... 🌟", show_alert=True)
@@ -764,7 +855,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         try:
-            if user_id in ADMIN_IDS:  # Сохранена логика для администраторов
+            if user_id in ADMIN_IDS:
                 await query.edit_message_text(
                     f"📊 *Админ-статистика:*\n👥 Пользователей: *{users}*\n📈 Запросов: *{requests}*\n💰 Доход: *{revenue} USDT*",
                     reply_markup=reply_markup,
@@ -905,7 +996,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"Error sending error message to {user_id} in button: {e}")
 
 if __name__ == "__main__":
-    # Создание приложения с улучшенным логированием
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
@@ -918,16 +1008,13 @@ if __name__ == "__main__":
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(button))
 
-    # Настройка задач с именами для отладки
     application.job_queue.run_repeating(check_payment_job, interval=60, name="check_payment")
     application.job_queue.run_repeating(check_alerts_job, interval=60, name="check_alerts")
 
-    # Инициализация статистики с TTL
     if not redis_client.exists('stats'):
         redis_client.setex('stats', 30 * 24 * 60 * 60, json.dumps({"users": {}, "total_requests": 0, "request_types": {}, "subscriptions": {}, "revenue": 0.0}))
     logger.info("Bot starting...")
 
-    # Улучшенный цикл polling с повторными попытками
     while True:
         try:
             application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
