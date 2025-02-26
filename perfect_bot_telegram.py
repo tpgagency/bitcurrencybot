@@ -1194,7 +1194,7 @@ async def retry_edit(query: Update.callback_query, context: ContextTypes.DEFAULT
             else:
                 logger.error(f"Failed to retry edit for {command} after retries: {e}")
 
-if __name__ == "__main__":
+async def run_bot():
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
@@ -1212,31 +1212,25 @@ if __name__ == "__main__":
 
     if not redis_client.exists('stats'):
         redis_client.setex('stats', 30 * 24 * 60 * 60, json.dumps({"users": {}, "total_requests": 0, "request_types": {}, "subscriptions": {}, "revenue": 0.0}))
-    logger.info("Bot starting...")
 
+    logger.info("Bot starting...")
     try:
         await application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, timeout=30)
     except (NetworkError, TelegramError) as e:
-        logger.error(f"Initial polling failed: {e}. Ensuring cleanup...")
+        logger.error(f"Polling failed: {e}. Restarting after cleanup...")
         await application.stop()
-        time.sleep(5)
     except Exception as e:
-        logger.critical(f"Fatal error during startup: {e}. Restarting...")
+        logger.critical(f"Fatal error: {e}. Restarting after cleanup...")
         await application.stop()
-        time.sleep(10)
 
+if __name__ == "__main__":
+    asyncio.run(run_bot())
     while True:
         try:
-            application.initialize()
-            await application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, timeout=30)
+            asyncio.run(run_bot())
         except (NetworkError, TelegramError) as e:
             logger.error(f"Polling error: {e}. Restarting in 5 seconds...")
-            await application.stop()
             time.sleep(5)
         except Exception as e:
             logger.critical(f"Fatal error: {e}. Restarting in 10 seconds...")
-            await application.stop()
             time.sleep(10)
-        finally:
-            await application.stop()
-            logger.info("Application stopped. Preparing for next run...")
