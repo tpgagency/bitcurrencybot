@@ -71,14 +71,16 @@ CURRENCIES = {
     'matic': {'code': 'MATIC'}
 }
 
-# Fallback курсы (обновлены для EUR/UAH)
+# Fallback курсы (обновлены и оптимизированы)
 FALLBACK_RATES = {
-    ('uah', 'usdt'): 0.0239,
-    ('usdt', 'uah'): 41.84,
-    ('eur', 'uah'): 42.5,  # Примерный курс EUR/UAH на 2025, можно уточнить
-    ('uah', 'eur'): 1 / 42.5,
-    ('eur', 'rub'): 100.0,
-    ('rub', 'eur'): 0.01
+    ('uah', 'usdt'): 0.0239,    # 1 UAH = 0.0239 USDT
+    ('usdt', 'uah'): 41.84,     # 1 USDT = 41.84 UAH
+    ('eur', 'uah'): 42.5,       # 1 EUR = 42.5 UAH
+    ('uah', 'eur'): 1 / 42.5,   # 1 UAH = 0.023529 EUR
+    ('eur', 'rub'): 105.0,      # 1 EUR = 105 RUB (примерный курс на 2025)
+    ('rub', 'eur'): 1 / 105.0,  # 1 RUB = 0.009524 EUR
+    ('eur', 'usdt'): 0.53,      # 1 EUR = 0.53 USDT (примерный курс)
+    ('usdt', 'eur'): 1 / 0.53   # 1 USDT = 1.8868 EUR
 }
 
 # Проверка подключения к Redis с повторными попытками
@@ -254,36 +256,37 @@ def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0)
                     time.sleep(0.5)
         return None
 
-    # Агрегация курсов
+    # Сбор курсов
     rates = []
-    
+    source = "aggregated"
+
     # Прямой курс Binance
     rate = fetch_rate(BINANCE_API_URL, f"{from_code}{to_code}")
-    if rate:
+    if rate and rate > 0:
         rates.append(rate)
 
-    # Обратный курс Binance
-    rate = fetch_rate(BINANCE_API_URL, f"{to_code}{from_code}", reverse=True)
-    if rate:
-        rates.append(1 / rate)
+    # Обратный курс Binance (с проверкой)
+    rate_reverse = fetch_rate(BINANCE_API_URL, f"{to_code}{from_code}", reverse=True)
+    if rate_reverse and rate_reverse > 0:
+        rates.append(1 / rate_reverse)
 
     # Прямой курс WhiteBIT
     rate = fetch_whitebit_rate(f"{from_code}_{to_code}")
-    if rate:
+    if rate and rate > 0:
         rates.append(rate)
 
     # Обратный курс WhiteBIT
-    rate = fetch_whitebit_rate(f"{to_code}_{from_code}", reverse=True)
-    if rate:
-        rates.append(1 / rate)
+    rate_reverse = fetch_whitebit_rate(f"{to_code}_{from_code}", reverse=True)
+    if rate_reverse and rate_reverse > 0:
+        rates.append(1 / rate_reverse)
 
-    # Косвенная конвертация через USDT (Binance и WhiteBIT)
+    # Косвенная конвертация через USDT
     if from_key != 'usdt' or to_key != 'usdt':
         rate_from_usdt_binance = fetch_rate(BINANCE_API_URL, f"{from_code}USDT") or fetch_rate(BINANCE_API_URL, f"USDT{from_code}", reverse=True)
         rate_to_usdt_binance = fetch_rate(BINANCE_API_URL, f"USDT{to_code}") or fetch_rate(BINANCE_API_URL, f"{to_code}USDT", reverse=True)
         rate_from_usdt_whitebit = fetch_whitebit_rate(f"{from_code}_USDT") or fetch_whitebit_rate(f"USDT_{from_code}", reverse=True)
         rate_to_usdt_whitebit = fetch_whitebit_rate(f"USDT_{to_code}") or fetch_whitebit_rate(f"{to_code}_USDT", reverse=True)
-        
+
         if rate_from_usdt_binance and rate_to_usdt_binance and rate_from_usdt_binance > 0 and rate_to_usdt_binance > 0:
             rate = rate_from_usdt_binance / rate_to_usdt_binance if to_key != 'usdt' else rate_from_usdt_binance
             if rate > 0:
@@ -302,36 +305,36 @@ def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0)
             if rate > 0:
                 rates.append(rate)
 
+    # Обработка результатов
     if rates:
-        rate = sum(rates) / len(rates)  # Среднее значение
-        if rate > 0:
-            # Проверка направления
-            if from_key == 'eur' and to_key == 'uah' and rate < 1:  # Обратный курс
+        rate = sum(rates) / len(rates) if rates else None
+        if rate:
+            # Коррекция направления
+            expected_range = {
+                ('eur', 'uah'): (40, 45),
+                ('eur', 'rub'): (100, 110),
+                ('eur', 'usdt'): (0.5, 0.55),
+                ('usdt', 'uah'): (40, 42)
+            }
+            if (from_key, to_key) in expected_range and rate < 1 and expected_range[(from_key, to_key)][0] > 1:
                 rate = 1 / rate
-            redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
-            return amount * rate, f"1 {from_code} = {rate} {to_code} (aggregated)"
-    else:
-        # Проверка напрямую через USDT с коррекцией
-        if from_key != 'usdt' and to_key != 'usdt':
-            rate_from_usdt = fetch_rate(BINANCE_API_URL, f"{from_code}USDT") or fetch_whitebit_rate(f"{from_code}_USDT")
-            rate_to_usdt = fetch_rate(BINANCE_API_URL, f"USDT{to_code}", reverse=True) or fetch_whitebit_rate(f"USDT_{to_code}", reverse=True)
-            if rate_from_usdt and rate_to_usdt and rate_from_usdt > 0 and rate_to_usdt > 0:
-                rate = rate_from_usdt * rate_to_usdt if to_key == 'usdt' else 1 / (rate_to_usdt / rate_from_usdt)
-                if rate > 0:
-                    redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
-                    return amount * rate, f"1 {from_code} = {rate} {to_code} (via USDT)"
+            elif rate <= 0:
+                rate = None
+            if rate:
+                redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
+                return amount * rate, f"1 {from_code} = {rate:.6f} {to_code} ({source})"
 
-    # Fallback курсы
+    # Fallback курсы с приоритетом
     if (from_key, to_key) in FALLBACK_RATES:
         rate = FALLBACK_RATES[(from_key, to_key)]
         logger.info(f"Using fallback: {from_key} to {to_key} = {rate}")
         redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
-        return amount * rate, f"1 {from_key.upper()} = {rate} {to_key.upper()} (fallback)"
+        return amount * rate, f"1 {from_key.upper()} = {rate:.6f} {to_key.upper()} (fallback)"
     if (to_key, from_key) in FALLBACK_RATES:
         rate = 1 / FALLBACK_RATES[(to_key, from_key)]
         logger.info(f"Using reverse fallback: {from_key} to {to_key} = {rate}")
         redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
-        return amount * rate, f"1 {from_key.upper()} = {rate} {to_key.upper()} (reverse fallback)"
+        return amount * rate, f"1 {from_key.upper()} = {rate:.6f} {to_key.upper()} (reverse fallback)"
 
     logger.error(f"No rate found for {from_key} to {to_key}")
     return None, "Курс недоступен: данные отсутствуют"
