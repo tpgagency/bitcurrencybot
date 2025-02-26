@@ -185,7 +185,7 @@ def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0)
     cached = redis_client.get(cache_key)
     if cached:
         rate = float(cached)
-        logger.info(f"Cache hit (real-time): {from_key} to {to_key} = {rate}")
+        logger.info(f"Cache hit: {from_key} to {to_key} = {rate}")
         return amount * rate, rate
     
     from_data = CURRENCIES.get(from_key)
@@ -782,7 +782,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     try:
-        await query.answer(text="🌟 Обработка... 🌟", show_alert=True)
+        await query.answer(text="🌟 Обработка... 🌟", show_alert=False)  # Убрал show_alert для предотвращения зависания
+        logger.debug(f"Answered callback for {query.from_user.id}")
     except TelegramError as e:
         logger.error(f"Error answering callback for {query.from_user.id}: {e}")
     user_id = str(query.from_user.id)
@@ -790,6 +791,10 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not await enforce_subscription(update, context):
         logger.debug(f"User {user_id} blocked by subscription")
+        try:
+            await query.edit_message_text("🚫 Подпишись на @tpgbit для продолжения!")
+        except TelegramError as e:
+            logger.error(f"Error sending subscription block to {user_id}: {e}")
         return
     
     stats = json.loads(redis_client.get('stats') or '{}')
@@ -820,7 +825,32 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['last_request'] = time.time()
     action = query.data
 
-    if action == "converter":
+    if action == "start":  # Улучшена обработка кнопки "Назад"
+        save_stats(user_id, "start")
+        logger.info(f"User {user_id} returned to start menu")
+        keyboard = [
+            [InlineKeyboardButton("💱 Конвертер", callback_data="converter"),
+             InlineKeyboardButton("📈 Курсы", callback_data="price")],
+            [InlineKeyboardButton("📊 Статистика", callback_data="stats"),
+             InlineKeyboardButton("💎 Подписка", callback_data="subscribe")],
+            [InlineKeyboardButton("🔔 Уведомления", callback_data="alert"),
+             InlineKeyboardButton("👥 Рефералы", callback_data="referrals")],
+            [InlineKeyboardButton("📜 История", callback_data="history")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        try:
+            await query.edit_message_text(
+                "👋 *Привет!* Я BitCurrencyBot — твой идеальный помощник для конвертации валют в реальном времени!\n"
+                "🌟 Выбери действие ниже или напиши запрос (например, \"usd btc\" или \"100 uah usdt\").\n"
+                f"🔑 *Бесплатно:* {FREE_REQUEST_LIMIT} запросов в сутки.\n"
+                f"🌟 *Безлимит:* /subscribe за {SUBSCRIPTION_PRICE} USDT.{AD_MESSAGE}",
+                reply_markup=reply_markup,
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except TelegramError as e:
+            logger.error(f"Error sending start menu to {user_id}: {e}")
+
+    elif action == "converter":
         keyboard = [
             [InlineKeyboardButton("💰 USD → BTC", callback_data="convert:usd:btc"),
              InlineKeyboardButton("💶 EUR → UAH", callback_data="convert:eur:uah")],
@@ -942,8 +972,9 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await query.answer(
                 text=f"🌟 Скопировано: {ref_link} 🌟",
-                show_alert=True
+                show_alert=False
             )
+            logger.debug(f"Copied referral link for {user_id}")
         except TelegramError as e:
             logger.error(f"Error answering copy_ref callback for {user_id}: {e}")
         refs = len(json.loads(redis_client.get(f"referrals:{user_id}") or '[]'))
