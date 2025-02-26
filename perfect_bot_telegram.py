@@ -114,7 +114,7 @@ async def check_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE)
         except TelegramError as e:
             logger.warning(f"Subscription check attempt {attempt + 1}/{MAX_RETRIES} failed for {user_id}: {e}")
             if attempt < MAX_RETRIES - 1:
-                time.sleep(2 ** attempt)
+                await asyncio.sleep(2 ** attempt)
             else:
                 logger.error(f"Failed to check subscription for {user_id} after retries: {e}")
                 await update.effective_message.reply_text(
@@ -230,7 +230,7 @@ async def get_exchange_rate(from_currency: str, to_currency: str, amount: float 
                         raise ValueError(f"Invalid rate for {pair}: {rate}")
                     return 1 / rate if reverse else rate
             except (requests.RequestException, ValueError, KeyError) as e:
-                logger.warning(f"Fetch attempt {amount + 1}/{retries} failed for {pair} from WhiteBIT: {e}")
+                logger.warning(f"Fetch attempt {attempt + 1}/{retries} failed for {pair} from WhiteBIT: {e}")
                 if attempt < retries - 1:
                     await asyncio.sleep(0.5)
         return None
@@ -258,7 +258,7 @@ async def get_exchange_rate(from_currency: str, to_currency: str, amount: float 
     if not rate and whitebit_reverse_rate and whitebit_reverse_rate > 0:
         rate = 1 / whitebit_reverse_rate
 
-    # Косвенная конвертация через USDT, если прямой курс отсутствует
+    # Косвенная конвертация через USDT
     if not rate and (from_key != 'usdt' or to_key != 'usdt'):
         rate_from_usdt_binance = await fetch_rate(BINANCE_API_URL, f"{from_code}USDT")
         rate_to_usdt_binance = await fetch_rate(BINANCE_API_URL, f"USDT{to_code}", reverse=True)
@@ -275,7 +275,7 @@ async def get_exchange_rate(from_currency: str, to_currency: str, amount: float 
         return amount * rate, f"1 {from_code} = {rate:.6f} {to_code}"
 
     logger.error(f"No rate found for {from_key} to {to_key}")
-    return None, "Курс недоступен: данные отсутствуют"
+    return None, "Курс недоступен"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await enforce_subscription(update, context):
@@ -297,7 +297,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await update.effective_message.reply_text(
             "👋 *Привет!* Я BitCurrencyBot — твой идеальный помощник для конвертации валют в реальном времени!\n"
-            "🌟 Выбери действие ниже или напиши запрос (например, \"usd btc\" или \"100 uah usdt\").\n"
+            "🌟 Выбери действие ниже или напиши запрос (например, \"100 usdt eur\").\n"
             f"🔑 *Бесплатно:* {FREE_REQUEST_LIMIT} запросов в сутки.\n"
             f"🌟 *Безлимит:* /subscribe за {SUBSCRIPTION_PRICE} USDT.{AD_MESSAGE}",
             reply_markup=reply_markup,
@@ -597,13 +597,13 @@ async def check_alerts_job(context: ContextTypes.DEFAULT_TYPE):
             for alert in alerts:
                 from_currency, to_currency, target_rate = alert["from"], alert["to"], alert["target"]
                 result, rate_info = await get_exchange_rate(from_currency, to_currency)
-                if result and float(rate_info.split()[2]) <= target_rate:
+                if result and float(rate_info.split('=')[1].strip().split()[0]) <= target_rate:
                     from_code = CURRENCIES[from_currency]['code']
                     to_code = CURRENCIES[to_currency]['code']
                     try:
                         await context.bot.send_message(
                             user_id,
-                            f"🔔 *Уведомление!* Курс *{from_code} → {to_code}* достиг *{float(rate_info.split()[2]):.8f}* (цель: {target_rate})",
+                            f"🔔 *Уведомление!* Курс *{from_code} → {to_code}* достиг *{float(rate_info.split('=')[1].strip().split()[0]):.8f}* (цель: {target_rate})",
                             parse_mode=ParseMode.MARKDOWN
                         )
                     except TelegramError as e:
@@ -648,27 +648,32 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     context.user_data['last_request'] = time.time()
-    text = update.effective_message.text.lower()
+    text = update.effective_message.text.lower().strip()
     logger.info(f"Message from {user_id}: {text}")
     
     try:
         parts = text.split()
         if len(parts) < 2:
             raise ValueError("Недостаточно аргументов")
-        if parts[0].replace('.', '', 1).isdigit():
-            amount = float(parts[0])
+        
+        amount_str = parts[0]
+        if amount_str.replace('.', '', 1).isdigit():
+            amount = float(amount_str)
+            if len(parts) != 3:
+                raise ValueError("Неверный формат: укажите две валюты")
             from_currency, to_currency = parts[1], parts[2]
-            logger.debug(f"Parsed: amount={amount}, from={from_currency}, to={to_currency}")
         else:
             amount = 1.0
+            if len(parts) != 2:
+                raise ValueError("Неверный формат: укажите две валюты")
             from_currency, to_currency = parts[0], parts[1]
-            logger.debug(f"Parsed: amount={amount}, from={from_currency}, to={to_currency}")
         
+        logger.debug(f"Parsed: amount={amount}, from={from_currency}, to={to_currency}")
         save_stats(user_id, f"{from_currency}_to_{to_currency}")
         result, rate_info = await get_exchange_rate(from_currency, to_currency, amount)
         if result is not None:
-            from_code = CURRENCIES[from_currency.lower()]['code']
-            to_code = CURRENCIES[to_currency.lower()]['code']
+            from_code = CURRENCIES[from_currency]['code']
+            to_code = CURRENCIES[to_currency]['code']
             remaining_display = "∞" if is_subscribed else remaining
             precision = 8 if to_code in ['BTC', 'ETH', 'XRP', 'DOGE', 'ADA', 'SOL', 'LTC', 'BNB', 'TRX', 'DOT', 'MATIC'] else 6
             keyboard = [
@@ -678,16 +683,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             try:
+                rate = float(rate_info.split('=')[1].strip().split()[0])
                 await update.effective_message.reply_text(
                     f"💰 *{amount:.1f} {from_code}* = *{result:.{precision}f} {to_code}*\n"
-                    f"📈 1 {from_code} = {float(rate_info.split()[2]):.6f} {to_code}\n"
+                    f"📈 1 {from_code} = {rate:.6f} {to_code}\n"
                     f"🔄 Осталось запросов: *{remaining_display}*{AD_MESSAGE}",
                     reply_markup=reply_markup,
                     parse_mode=ParseMode.MARKDOWN
                 )
-            except TelegramError as e:
-                logger.error(f"Error sending conversion result to {user_id}: {e}")
-                await retry_send(update, context, "handle_message")
+            except (ValueError, IndexError):
+                await update.effective_message.reply_text(
+                    f"💰 *{amount:.1f} {from_code}* = *{result:.{precision}f} {to_code}*\n"
+                    f"🔄 Осталось запросов: *{remaining_display}*{AD_MESSAGE}",
+                    reply_markup=reply_markup,
+                    parse_mode=ParseMode.MARKDOWN
+                )
             save_history(user_id, from_code, to_code, amount, result)
         else:
             try:
@@ -707,7 +717,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
         try:
             await update.effective_message.reply_text(
-                '📝 *Примеры:* `"usd btc"` или `"100 uah usdt"`\nИли используй меню через /start',
+                '📝 *Примеры:* "100 usdt eur" или "usd btc"\nИли используй меню через /start',
                 reply_markup=reply_markup,
                 parse_mode=ParseMode.MARKDOWN
             )
@@ -784,7 +794,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await query.edit_message_text(
                 "👋 *Привет!* Я BitCurrencyBot — твой идеальный помощник для конвертации валют в реальном времени!\n"
-                "🌟 Выбери действие ниже или напиши запрос (например, \"usd btc\" или \"100 uah usdt\").\n"
+                "🌟 Выбери действие ниже или напиши запрос (например, \"100 usdt eur\").\n"
                 f"🔑 *Бесплатно:* {FREE_REQUEST_LIMIT} запросов в сутки.\n"
                 f"🌟 *Безлимит:* /subscribe за {SUBSCRIPTION_PRICE} USDT.{AD_MESSAGE}",
                 reply_markup=reply_markup,
@@ -806,7 +816,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
         try:
             await query.edit_message_text(
-                "💱 *Выбери валютную пару или введи вручную (например, \"100 uah usdt\"):*",
+                "💱 *Выбери валютную пару или введи вручную (например, \"100 usdt eur\"):*",
                 reply_markup=reply_markup,
                 parse_mode=ParseMode.MARKDOWN
             )
@@ -817,7 +827,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "price":
         try:
             await query.edit_message_text(
-                "📈 *Введи валюту для проверки текущей цены, например: \"btc usd\"*",
+                "📈 *Введи валюту для проверки текущей цены, например: \"usd eur\"*",
                 parse_mode=ParseMode.MARKDOWN
             )
         except TelegramError as e:
@@ -924,7 +934,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "manual_convert":
         try:
             await query.edit_message_text(
-                "💱 *Введи запрос вручную:* например, \"100 uah usdt\"",
+                "💱 *Введи запрос вручную:* например, \"100 usdt eur\"",
                 parse_mode=ParseMode.MARKDOWN
             )
         except TelegramError as e:
@@ -976,16 +986,21 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             try:
+                rate = float(rate_info.split('=')[1].strip().split()[0])
                 await query.edit_message_text(
                     f"💰 *1.0 {from_code}* = *{result:.{precision}f} {to_code}*\n"
-                    f"📈 1 {from_code} = {float(rate_info.split()[2]):.6f} {to_code}\n"
+                    f"📈 1 {from_code} = {rate:.6f} {to_code}\n"
                     f"🔄 Осталось запросов: *{remaining}*{AD_MESSAGE}",
                     reply_markup=reply_markup,
                     parse_mode=ParseMode.MARKDOWN
                 )
-            except TelegramError as e:
-                logger.error(f"Error sending conversion result to {user_id} in button: {e}")
-                await retry_edit(query, context, "convert")
+            except (ValueError, IndexError):
+                await query.edit_message_text(
+                    f"💰 *1.0 {from_code}* = *{result:.{precision}f} {to_code}*\n"
+                    f"🔄 Осталось запросов: *{remaining}*{AD_MESSAGE}",
+                    reply_markup=reply_markup,
+                    parse_mode=ParseMode.MARKDOWN
+                )
             save_history(user_id, from_code, to_code, 1.0, result)
         else:
             try:
@@ -1027,7 +1042,7 @@ async def retry_edit(query: Update.callback_query, context: ContextTypes.DEFAULT
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await query.edit_message_text(
                     "👋 *Привет!* Я BitCurrencyBot — твой идеальный помощник для конвертации валют в реальном времени!\n"
-                    "🌟 Выбери действие ниже или напиши запрос (например, \"usd btc\" или \"100 uah usdt\").\n"
+                    "🌟 Выбери действие ниже или напиши запрос (например, \"100 usdt eur\").\n"
                     f"🔑 *Бесплатно:* {FREE_REQUEST_LIMIT} запросов в сутки.\n"
                     f"🌟 *Безлимит:* /subscribe за {SUBSCRIPTION_PRICE} USDT.{AD_MESSAGE}",
                     reply_markup=reply_markup,
@@ -1044,13 +1059,13 @@ async def retry_edit(query: Update.callback_query, context: ContextTypes.DEFAULT
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await query.edit_message_text(
-                    "💱 *Выбери валютную пару или введи вручную (например, \"100 uah usdt\"):*",
+                    "💱 *Выбери валютную пару или введи вручную (например, \"100 usdt eur\"):*",
                     reply_markup=reply_markup,
                     parse_mode=ParseMode.MARKDOWN
                 )
             elif command == "price":
                 await query.edit_message_text(
-                    "📈 *Введи валюту для проверки текущей цены, например: \"btc usd\"*",
+                    "📈 *Введи валюту для проверки текущей цены, например: \"usd eur\"*",
                     parse_mode=ParseMode.MARKDOWN
                 )
             elif command == "stats":
@@ -1114,7 +1129,7 @@ async def retry_edit(query: Update.callback_query, context: ContextTypes.DEFAULT
                 )
             elif command == "manual_convert":
                 await query.edit_message_text(
-                    "💱 *Введи запрос вручную:* например, \"100 uah usdt\"",
+                    "💱 *Введи запрос вручную:* например, \"100 usdt eur\"",
                     parse_mode=ParseMode.MARKDOWN
                 )
             elif command == "copy_ref":
@@ -1145,18 +1160,32 @@ async def retry_edit(query: Update.callback_query, context: ContextTypes.DEFAULT
                          InlineKeyboardButton("🔙 Назад", callback_data="start")]
                     ]
                     reply_markup = InlineKeyboardMarkup(keyboard)
-                    await query.edit_message_text(
-                        f"💰 *1.0 {from_code}* = *{result:.{precision}f} {to_code}*\n"
-                        f"📈 1 {from_code} = {float(rate_info.split()[2]):.6f} {to_code}\n"
-                        f"🔄 Осталось запросов: *{remaining}*{AD_MESSAGE}",
-                        reply_markup=reply_markup,
-                        parse_mode=ParseMode.MARKDOWN
-                    )
+                    try:
+                        rate = float(rate_info.split('=')[1].strip().split()[0])
+                        await query.edit_message_text(
+                            f"💰 *1.0 {from_code}* = *{result:.{precision}f} {to_code}*\n"
+                            f"📈 1 {from_code} = {rate:.6f} {to_code}\n"
+                            f"🔄 Осталось запросов: *{remaining}*{AD_MESSAGE}",
+                            reply_markup=reply_markup,
+                            parse_mode=ParseMode.MARKDOWN
+                        )
+                    except (ValueError, IndexError):
+                        await query.edit_message_text(
+                            f"💰 *1.0 {from_code}* = *{result:.{precision}f} {to_code}*\n"
+                            f"🔄 Осталось запросов: *{remaining}*{AD_MESSAGE}",
+                            reply_markup=reply_markup,
+                            parse_mode=ParseMode.MARKDOWN
+                        )
+                    save_history(user_id, from_code, to_code, 1.0, result)
                 else:
-                    await query.edit_message_text(
-                        f"❌ Ошибка: {rate_info}",
-                        parse_mode=ParseMode.MARKDOWN
-                    )
+                    try:
+                        await query.edit_message_text(
+                            f"❌ Ошибка: {rate_info}",
+                            parse_mode=ParseMode.MARKDOWN
+                        )
+                    except TelegramError as e:
+                        logger.error(f"Error sending error message to {user_id} in button: {e}")
+                        await retry_edit(query, context, "convert")
             break
         except TelegramError as e:
             logger.warning(f"Retry edit attempt {attempt + 2}/{MAX_RETRIES} failed for {command}: {e}")
@@ -1186,27 +1215,28 @@ if __name__ == "__main__":
     logger.info("Bot starting...")
 
     try:
-        application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, timeout=30)
+        await application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, timeout=30)
     except (NetworkError, TelegramError) as e:
         logger.error(f"Initial polling failed: {e}. Ensuring cleanup...")
-        application.stop()
+        await application.stop()
         time.sleep(5)
     except Exception as e:
         logger.critical(f"Fatal error during startup: {e}. Restarting...")
+        await application.stop()
         time.sleep(10)
 
     while True:
         try:
             application.initialize()
-            application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, timeout=30)
+            await application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, timeout=30)
         except (NetworkError, TelegramError) as e:
             logger.error(f"Polling error: {e}. Restarting in 5 seconds...")
-            application.stop()
+            await application.stop()
             time.sleep(5)
         except Exception as e:
             logger.critical(f"Fatal error: {e}. Restarting in 10 seconds...")
-            application.stop()
+            await application.stop()
             time.sleep(10)
         finally:
-            application.stop()
+            await application.stop()
             logger.info("Application stopped. Preparing for next run...")
