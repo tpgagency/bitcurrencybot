@@ -37,10 +37,10 @@ if not CRYPTO_PAY_TOKEN:
 AD_MESSAGE = "\n\n📢 Подпишись на @tpgbit для новостей о крипте!"
 FREE_REQUEST_LIMIT = 5
 SUBSCRIPTION_PRICE = 5
-CACHE_TIMEOUT = 300  # Увеличено до 5 минут для стабильности
+CACHE_TIMEOUT = 300  # 5 минут для стабильности
 ADMIN_IDS = ["1058875848", "6403305626"]
-HISTORY_LIMIT = 20  # Увеличен лимит истории
-MAX_RETRIES = 3  # Максимум повторных попыток при ошибках
+HISTORY_LIMIT = 20
+MAX_RETRIES = 3
 
 # API endpoints
 BINANCE_API_URL = "https://api.binance.com/api/v3/ticker/price"
@@ -71,9 +71,15 @@ CURRENCIES = {
     'matic': {'code': 'MATIC'}
 }
 
-# Fallback курсы
-UAH_TO_USDT_FALLBACK = 0.0239
-USDT_TO_UAH_FALLBACK = 41.84
+# Fallback курсы (обновлены для EUR/UAH)
+FALLBACK_RATES = {
+    ('uah', 'usdt'): 0.0239,
+    ('usdt', 'uah'): 41.84,
+    ('eur', 'uah'): 42.5,  # Примерный курс EUR/UAH на 2025, можно уточнить
+    ('uah', 'eur'): 1 / 42.5,
+    ('eur', 'rub'): 100.0,
+    ('rub', 'eur'): 0.01
+}
 
 # Проверка подключения к Redis с повторными попытками
 def init_redis_connection():
@@ -84,7 +90,7 @@ def init_redis_connection():
             return True
         except redis.ConnectionError as e:
             logger.warning(f"Redis connection attempt {attempt + 1}/{MAX_RETRIES} failed: {e}")
-            time.sleep(2 ** attempt)  # Экспоненциальная задержка
+            time.sleep(2 ** attempt)
     logger.critical("Failed to connect to Redis after all retries")
     exit(1)
 
@@ -217,96 +223,115 @@ def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0)
         redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
         return amount * rate, f"1 {from_key.upper()} = 1 {to_key.upper()}"
 
-    # Попытки получения курса
-    def fetch_rate(api_url: str, pair: str, reverse: bool = False) -> Optional[float]:
-        try:
-            response = requests.get(f"{api_url}?symbol={pair}", timeout=5).json()
-            if 'price' in response:
-                rate = float(response['price'])
-                if rate <= 0:
-                    raise ValueError(f"Invalid rate for {pair}: {rate}")
-                return 1 / rate if reverse else rate
-        except (requests.RequestException, ValueError, KeyError) as e:
-            logger.warning(f"Failed to fetch {pair} from {api_url}: {e}")
+    # Функция для получения курса с повторными попытками
+    def fetch_rate(api_url: str, pair: str, reverse: bool = False, retries: int = MAX_RETRIES) -> Optional[float]:
+        for attempt in range(retries):
+            try:
+                response = requests.get(f"{api_url}?symbol={pair}", timeout=5).json()
+                if 'price' in response:
+                    rate = float(response['price'])
+                    if rate <= 0:
+                        raise ValueError(f"Invalid rate for {pair}: {rate}")
+                    return 1 / rate if reverse else rate
+            except (requests.RequestException, ValueError, KeyError) as e:
+                logger.warning(f"Fetch attempt {attempt + 1}/{retries} failed for {pair} from {api_url}: {e}")
+                if attempt < retries - 1:
+                    time.sleep(0.5)
         return None
 
-    def fetch_whitebit_rate(pair: str, reverse: bool = False) -> Optional[float]:
-        try:
-            response = requests.get(WHITEBIT_API_URL, timeout=5).json()
-            if pair in response:
-                rate = float(response[pair]['last_price'])
-                if rate <= 0:
-                    raise ValueError(f"Invalid rate for {pair}: {rate}")
-                return 1 / rate if reverse else rate
-        except (requests.RequestException, ValueError, KeyError) as e:
-            logger.warning(f"Failed to fetch {pair} from WhiteBIT: {e}")
+    def fetch_whitebit_rate(pair: str, reverse: bool = False, retries: int = MAX_RETRIES) -> Optional[float]:
+        for attempt in range(retries):
+            try:
+                response = requests.get(WHITEBIT_API_URL, timeout=5).json()
+                if pair in response:
+                    rate = float(response[pair]['last_price'])
+                    if rate <= 0:
+                        raise ValueError(f"Invalid rate for {pair}: {rate}")
+                    return 1 / rate if reverse else rate
+            except (requests.RequestException, ValueError, KeyError) as e:
+                logger.warning(f"Fetch attempt {attempt + 1}/{retries} failed for {pair} from WhiteBIT: {e}")
+                if attempt < retries - 1:
+                    time.sleep(0.5)
         return None
 
+    # Агрегация курсов
+    rates = []
+    
     # Прямой курс Binance
     rate = fetch_rate(BINANCE_API_URL, f"{from_code}{to_code}")
     if rate:
-        redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
-        return amount * rate, f"1 {from_code} = {rate} {to_code} (Binance direct)"
+        rates.append(rate)
 
     # Обратный курс Binance
     rate = fetch_rate(BINANCE_API_URL, f"{to_code}{from_code}", reverse=True)
     if rate:
-        redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
-        return amount * rate, f"1 {from_code} = {1/rate} {to_code} (Binance reverse)"
-
-    # Косвенная конвертация через USDT (Binance)
-    if from_key != 'usdt' or to_key != 'usdt':
-        rate_from_usdt = fetch_rate(BINANCE_API_URL, f"{from_code}USDT") or fetch_rate(BINANCE_API_URL, f"USDT{from_code}", reverse=True)
-        rate_to_usdt = fetch_rate(BINANCE_API_URL, f"USDT{to_code}") or fetch_rate(BINANCE_API_URL, f"{to_code}USDT", reverse=True)
-        if rate_from_usdt and rate_to_usdt:
-            rate = rate_from_usdt / rate_to_usdt if to_key != 'usdt' else rate_from_usdt
-            if rate > 0:
-                redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
-                return amount * rate, f"1 {from_code} = {rate} {to_code} (Binance via USDT)"
+        rates.append(1 / rate)
 
     # Прямой курс WhiteBIT
     rate = fetch_whitebit_rate(f"{from_code}_{to_code}")
     if rate:
-        redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
-        return amount * rate, f"1 {from_code} = {rate} {to_code} (WhiteBIT direct)"
+        rates.append(rate)
 
     # Обратный курс WhiteBIT
     rate = fetch_whitebit_rate(f"{to_code}_{from_code}", reverse=True)
     if rate:
-        redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
-        return amount * rate, f"1 {from_code} = {1/rate} {to_code} (WhiteBIT reverse)"
+        rates.append(1 / rate)
 
-    # Косвенная конвертация через USDT (WhiteBIT)
+    # Косвенная конвертация через USDT (Binance и WhiteBIT)
     if from_key != 'usdt' or to_key != 'usdt':
-        rate_from_usdt = fetch_whitebit_rate(f"{from_code}_USDT") or fetch_whitebit_rate(f"USDT_{from_code}", reverse=True)
-        rate_to_usdt = fetch_whitebit_rate(f"USDT_{to_code}") or fetch_whitebit_rate(f"{to_code}_USDT", reverse=True)
-        if rate_from_usdt and rate_to_usdt:
-            rate = rate_from_usdt / rate_to_usdt if to_key != 'usdt' else rate_from_usdt
+        rate_from_usdt_binance = fetch_rate(BINANCE_API_URL, f"{from_code}USDT") or fetch_rate(BINANCE_API_URL, f"USDT{from_code}", reverse=True)
+        rate_to_usdt_binance = fetch_rate(BINANCE_API_URL, f"USDT{to_code}") or fetch_rate(BINANCE_API_URL, f"{to_code}USDT", reverse=True)
+        rate_from_usdt_whitebit = fetch_whitebit_rate(f"{from_code}_USDT") or fetch_whitebit_rate(f"USDT_{from_code}", reverse=True)
+        rate_to_usdt_whitebit = fetch_whitebit_rate(f"USDT_{to_code}") or fetch_whitebit_rate(f"{to_code}_USDT", reverse=True)
+        
+        if rate_from_usdt_binance and rate_to_usdt_binance and rate_from_usdt_binance > 0 and rate_to_usdt_binance > 0:
+            rate = rate_from_usdt_binance / rate_to_usdt_binance if to_key != 'usdt' else rate_from_usdt_binance
             if rate > 0:
-                redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
-                return amount * rate, f"1 {from_code} = {rate} {to_code} (WhiteBIT via USDT)"
+                rates.append(rate)
+        if rate_from_usdt_whitebit and rate_to_usdt_whitebit and rate_from_usdt_whitebit > 0 and rate_to_usdt_whitebit > 0:
+            rate = rate_from_usdt_whitebit / rate_to_usdt_whitebit if to_key != 'usdt' else rate_from_usdt_whitebit
+            if rate > 0:
+                rates.append(rate)
 
-    # Косвенная конвертация через BTC (Binance)
+    # Косвенная конвертация через BTC
     if from_key != 'btc' or to_key != 'btc':
-        rate_from_btc = fetch_rate(BINANCE_API_URL, f"{from_code}BTC") or fetch_rate(BINANCE_API_URL, f"BTC{from_code}", reverse=True)
-        rate_to_btc = fetch_rate(BINANCE_API_URL, f"BTC{to_code}") or fetch_rate(BINANCE_API_URL, f"{to_code}BTC", reverse=True)
-        if rate_from_btc and rate_to_btc:
-            rate = (rate_from_btc / rate_to_btc) if to_key != 'btc' else rate_from_btc
+        rate_from_btc_binance = fetch_rate(BINANCE_API_URL, f"{from_code}BTC") or fetch_rate(BINANCE_API_URL, f"BTC{from_code}", reverse=True)
+        rate_to_btc_binance = fetch_rate(BINANCE_API_URL, f"BTC{to_code}") or fetch_rate(BINANCE_API_URL, f"{to_code}BTC", reverse=True)
+        if rate_from_btc_binance and rate_to_btc_binance and rate_from_btc_binance > 0 and rate_to_btc_binance > 0:
+            rate = (rate_from_btc_binance / rate_to_btc_binance) if to_key != 'btc' else rate_from_btc_binance
             if rate > 0:
-                redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
-                return amount * rate, f"1 {from_code} = {rate} {to_code} (Binance via BTC)"
+                rates.append(rate)
 
-    # Fallback для UAH-USDT
-    if from_key == 'uah' and to_key == 'usdt':
-        rate = UAH_TO_USDT_FALLBACK
+    if rates:
+        rate = sum(rates) / len(rates)  # Среднее значение
+        if rate > 0:
+            # Проверка направления
+            if from_key == 'eur' and to_key == 'uah' and rate < 1:  # Обратный курс
+                rate = 1 / rate
+            redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
+            return amount * rate, f"1 {from_code} = {rate} {to_code} (aggregated)"
+    else:
+        # Проверка напрямую через USDT с коррекцией
+        if from_key != 'usdt' and to_key != 'usdt':
+            rate_from_usdt = fetch_rate(BINANCE_API_URL, f"{from_code}USDT") or fetch_whitebit_rate(f"{from_code}_USDT")
+            rate_to_usdt = fetch_rate(BINANCE_API_URL, f"USDT{to_code}", reverse=True) or fetch_whitebit_rate(f"USDT_{to_code}", reverse=True)
+            if rate_from_usdt and rate_to_usdt and rate_from_usdt > 0 and rate_to_usdt > 0:
+                rate = rate_from_usdt * rate_to_usdt if to_key == 'usdt' else 1 / (rate_to_usdt / rate_from_usdt)
+                if rate > 0:
+                    redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
+                    return amount * rate, f"1 {from_code} = {rate} {to_code} (via USDT)"
+
+    # Fallback курсы
+    if (from_key, to_key) in FALLBACK_RATES:
+        rate = FALLBACK_RATES[(from_key, to_key)]
         logger.info(f"Using fallback: {from_key} to {to_key} = {rate}")
         redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
         return amount * rate, f"1 {from_key.upper()} = {rate} {to_key.upper()} (fallback)"
-    if from_key == 'usdt' and to_key == 'uah':
-        rate = USDT_TO_UAH_FALLBACK
-        logger.info(f"Using fallback: {from_key} to {to_key} = {rate}")
+    if (to_key, from_key) in FALLBACK_RATES:
+        rate = 1 / FALLBACK_RATES[(to_key, from_key)]
+        logger.info(f"Using reverse fallback: {from_key} to {to_key} = {rate}")
         redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
-        return amount * rate, f"1 {from_key.upper()} = {rate} {to_key.upper()} (fallback)"
+        return amount * rate, f"1 {from_key.upper()} = {rate} {to_key.upper()} (reverse fallback)"
 
     logger.error(f"No rate found for {from_key} to {to_key}")
     return None, "Курс недоступен: данные отсутствуют"
@@ -631,7 +656,7 @@ async def check_alerts_job(context: ContextTypes.DEFAULT_TYPE):
             for alert in alerts:
                 from_currency, to_currency, target_rate = alert["from"], alert["to"], alert["target"]
                 result, rate_info = get_exchange_rate(from_currency, to_currency)
-                if result and float(rate_info.split()[2]) <= target_rate:  # Извлекаем числовое значение из rate_info
+                if result and float(rate_info.split()[2]) <= target_rate:
                     from_code = CURRENCIES[from_currency]['code']
                     to_code = CURRENCIES[to_currency]['code']
                     try:
