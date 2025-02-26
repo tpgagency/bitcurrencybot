@@ -21,11 +21,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Конфигурация (сохранена без изменений, но добавлены комментарии)
+# Конфигурация (сохранена без изменений)
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CRYPTO_PAY_TOKEN = os.getenv('CRYPTO_PAY_TOKEN')
 REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
-CHANNEL_USERNAME = "@tpgbit"  # Обязательный канал для подписки
+CHANNEL_USERNAME = "@tpgbit"  # Обязательный канал
 BOT_USERNAME = "BitCurrencyBot"
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True, ssl_cert_reqs="none")
 
@@ -36,8 +36,8 @@ if not CRYPTO_PAY_TOKEN:
     logger.error("CRYPTO_PAY_TOKEN not set")
     exit(1)
 
-AD_MESSAGE = "\n\n📢 Подпишись на @tpgbit для новостей о крипте!"  # Сообщение с каналом
-FREE_REQUEST_LIMIT = 5  # Лимит 5 запросов для не-подписчиков
+AD_MESSAGE = "\n\n📢 Подпишись на @tpgbit для новостей о крипте!"
+FREE_REQUEST_LIMIT = 5  # Лимит 5 запросов
 SUBSCRIPTION_PRICE = 5  # Цена подписки
 CACHE_TIMEOUT = 5  # Время кэша курсов
 ADMIN_IDS = ["1058875848", "6403305626"]  # Безлимит для этих пользователей
@@ -78,7 +78,7 @@ USDT_TO_UAH_FALLBACK = 41.84
 
 # Проверка подключения к Redis
 try:
-    redis_client.ping()  # Проверяем, работает ли Redis
+    redis_client.ping()  # Проверяем связь с Redis
     logger.info("Connected to Redis successfully")
 except redis.ConnectionError as e:
     logger.error(f"Failed to connect to Redis: {e}")
@@ -187,7 +187,7 @@ def check_limit(user_id: str) -> tuple[bool, str]:
         return False, "0"
 
 def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0) -> tuple[float, float] | tuple[None, str]:
-    """Получение курса с улучшенной обработкой ошибок."""
+    """Получение курса с улучшенной обработкой через косвенные пары."""
     from_key = from_currency.lower()
     to_key = to_currency.lower()
     cache_key = f"rate:{from_key}_{to_key}"
@@ -212,7 +212,7 @@ def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0)
         redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
         return amount * rate, rate
 
-    # Binance API с таймаутом и обработкой ошибок
+    # Попытка прямого курса через Binance
     try:
         pair = f"{from_code}{to_code}"
         response = requests.get(f"{BINANCE_API_URL}?symbol={pair}", timeout=5).json()
@@ -224,9 +224,69 @@ def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0)
             redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
             return amount * rate, rate
     except (requests.RequestException, ValueError, KeyError) as e:
-        logger.warning(f"Binance API failed for {from_key} to {to_key}: {e}")
+        logger.warning(f"Binance direct failed for {from_key} to {to_key}: {e}")
 
-    # WhiteBIT API с таймаутом и обработкой ошибок
+    # Попытка обратного курса через Binance
+    try:
+        reverse_pair = f"{to_code}{from_code}"
+        response = requests.get(f"{BINANCE_API_URL}?symbol={reverse_pair}", timeout=5).json()
+        if 'price' in response:
+            reverse_rate = float(response['price'])
+            if reverse_rate <= 0:
+                raise ValueError(f"Invalid Binance reverse rate for {reverse_pair}: {reverse_rate}")
+            rate = 1 / reverse_rate
+            logger.info(f"Binance reverse rate (real-time): {reverse_pair} = {rate}")
+            redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
+            return amount * rate, rate
+    except (requests.RequestException, ValueError, KeyError) as e:
+        logger.warning(f"Binance reverse failed for {from_key} to {to_key}: {e}")
+
+    # Косвенная конверсия через USDT (Binance)
+    try:
+        rate_from_usdt = None
+        rate_to_usdt = None
+        
+        if from_key != 'usdt':
+            from_usdt_pair = f"{from_code}USDT"
+            response_from = requests.get(f"{BINANCE_API_URL}?symbol={from_usdt_pair}", timeout=5).json()
+            if 'price' in response_from:
+                rate_from_usdt = float(response_from['price'])
+                logger.debug(f"Binance {from_usdt_pair} = {rate_from_usdt}")
+            else:
+                usdt_from_pair = f"USDT{from_code}"
+                response_from_reverse = requests.get(f"{BINANCE_API_URL}?symbol={usdt_from_pair}", timeout=5).json()
+                if 'price' in response_from_reverse:
+                    rate_from_usdt = 1 / float(response_from_reverse['price'])
+                    logger.debug(f"Binance {usdt_from_pair} (inverse) = {rate_from_usdt}")
+        else:
+            rate_from_usdt = 1.0
+
+        if to_key != 'usdt':
+            to_usdt_pair = f"USDT{to_code}"
+            response_to = requests.get(f"{BINANCE_API_URL}?symbol={to_usdt_pair}", timeout=5).json()
+            if 'price' in response_to:
+                rate_to_usdt = float(response_to['price'])
+                logger.debug(f"Binance {to_usdt_pair} = {rate_to_usdt}")
+            else:
+                usdt_to_pair = f"{to_code}USDT"
+                response_to_reverse = requests.get(f"{BINANCE_API_URL}?symbol={usdt_to_pair}", timeout=5).json()
+                if 'price' in response_to_reverse:
+                    rate_to_usdt = 1 / float(response_to_reverse['price'])
+                    logger.debug(f"Binance {usdt_to_pair} (inverse) = {rate_to_usdt}")
+        else:
+            rate_to_usdt = 1.0
+
+        if rate_from_usdt and rate_to_usdt:
+            rate = rate_from_usdt / rate_to_usdt if to_key != 'usdt' else rate_from_usdt
+            if rate <= 0:
+                raise ValueError(f"Invalid Binance calculated rate for {from_key} to {to_key}: {rate}")
+            logger.info(f"Binance via USDT (real-time): {from_key} to {to_key} = {rate}")
+            redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
+            return amount * rate, rate
+    except (requests.RequestException, ValueError, KeyError) as e:
+        logger.warning(f"Binance via USDT failed for {from_key} to {to_key}: {e}")
+
+    # Попытка прямого курса через WhiteBIT
     try:
         response = requests.get(WHITEBIT_API_URL, timeout=5).json()
         pair_key = f"{from_code}_{to_code}"
@@ -238,7 +298,62 @@ def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0)
             redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
             return amount * rate, rate
     except (requests.RequestException, ValueError, KeyError) as e:
-        logger.warning(f"WhiteBIT API failed for {from_key} to {to_key}: {e}")
+        logger.warning(f"WhiteBIT direct failed for {from_key} to {to_key}: {e}")
+
+    # Попытка обратного курса через WhiteBIT
+    try:
+        reverse_pair_key = f"{to_code}_{from_code}"
+        if reverse_pair_key in response:
+            reverse_rate = float(response[reverse_pair_key]['last_price'])
+            if reverse_rate <= 0:
+                raise ValueError(f"Invalid WhiteBIT reverse rate for {reverse_pair_key}: {reverse_rate}")
+            rate = 1 / reverse_rate
+            logger.info(f"WhiteBIT reverse rate (real-time): {reverse_pair_key} = {rate}")
+            redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
+            return amount * rate, rate
+    except (requests.RequestException, ValueError, KeyError) as e:
+        logger.warning(f"WhiteBIT reverse failed for {from_key} to {to_key}: {e}")
+
+    # Косвенная конверсия через USDT (WhiteBIT)
+    try:
+        rate_from_usdt = None
+        rate_to_usdt = None
+        
+        if from_key != 'usdt':
+            from_usdt_pair = f"{from_code}_USDT"
+            if from_usdt_pair in response:
+                rate_from_usdt = float(response[from_usdt_pair]['last_price'])
+                logger.debug(f"WhiteBIT {from_usdt_pair} = {rate_from_usdt}")
+            else:
+                usdt_from_pair = f"USDT_{from_code}"
+                if usdt_from_pair in response:
+                    rate_from_usdt = 1 / float(response[usdt_from_pair]['last_price'])
+                    logger.debug(f"WhiteBIT {usdt_from_pair} (inverse) = {rate_from_usdt}")
+        else:
+            rate_from_usdt = 1.0
+
+        if to_key != 'usdt':
+            to_usdt_pair = f"USDT_{to_code}"
+            if to_usdt_pair in response:
+                rate_to_usdt = float(response[to_usdt_pair]['last_price'])
+                logger.debug(f"WhiteBIT {to_usdt_pair} = {rate_to_usdt}")
+            else:
+                usdt_to_pair = f"{to_code}_USDT"
+                if usdt_to_pair in response:
+                    rate_to_usdt = 1 / float(response[usdt_to_pair]['last_price'])
+                    logger.debug(f"WhiteBIT {usdt_to_pair} (inverse) = {rate_to_usdt}")
+        else:
+            rate_to_usdt = 1.0
+
+        if rate_from_usdt and rate_to_usdt:
+            rate = rate_from_usdt / rate_to_usdt if to_key != 'usdt' else rate_from_usdt
+            if rate <= 0:
+                raise ValueError(f"Invalid WhiteBIT calculated rate for {from_key} to {to_key}: {rate}")
+            logger.info(f"WhiteBIT via USDT (real-time): {from_key} to {to_key} = {rate}")
+            redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
+            return amount * rate, rate
+    except (requests.RequestException, ValueError, KeyError) as e:
+        logger.warning(f"WhiteBIT via USDT failed for {from_key} to {to_key}: {e}")
 
     # Fallback для UAH-USDT
     try:
