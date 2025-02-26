@@ -3,6 +3,7 @@ import json
 import time
 import logging
 import requests
+import signal
 from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 import redis
@@ -1197,8 +1198,7 @@ async def retry_edit(query: Update.callback_query, context: ContextTypes.DEFAULT
 async def run_bot():
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-    # Инициализация приложения
-    await application.initialize()
+    # Настройка команд
     await set_bot_commands(application)
 
     application.add_handler(CommandHandler("start", start))
@@ -1221,14 +1221,26 @@ async def run_bot():
     try:
         await application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, timeout=30)
     except (NetworkError, TelegramError) as e:
-        logger.error(f"Polling failed: {e}. Restarting after cleanup...")
+        logger.error(f"Polling failed: {e}")
     except Exception as e:
-        logger.critical(f"Fatal error: {e}. Restarting after cleanup...")
+        logger.critical(f"Fatal error: {e}")
     finally:
-        await application.shutdown()
-        logger.info("Application shut down gracefully.")
+        logger.info("Application shutting down...")
+        await application.updater.stop()  # Корректное завершение polling
+        await asyncio.sleep(1)  # Даем время на завершение
+
+def signal_handler(signum, frame):
+    logger.info(f"Received signal {signum}, shutting down gracefully...")
+    loop = asyncio.get_event_loop()
+    if loop.is_running():
+        loop.stop()
 
 async def main():
+    # Установка обработчика сигналов для graceful shutdown
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown()))
+
     while True:
         try:
             await run_bot()
@@ -1238,6 +1250,12 @@ async def main():
         except Exception as e:
             logger.critical(f"Fatal error: {e}. Restarting in 10 seconds...")
             await asyncio.sleep(10)
+
+async def shutdown():
+    logger.info("Shutting down application...")
+    await asyncio.sleep(1)  # Даем время на завершение текущих задач
+    loop = asyncio.get_event_loop()
+    loop.stop()
 
 if __name__ == "__main__":
     asyncio.run(main())
