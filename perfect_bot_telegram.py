@@ -1197,6 +1197,10 @@ async def retry_edit(query: Update.callback_query, context: ContextTypes.DEFAULT
 async def run_bot():
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
+    # Инициализация приложения
+    await application.initialize()
+    await set_bot_commands(application)
+
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("currencies", currencies))
     application.add_handler(CommandHandler("alert", alert))
@@ -1218,19 +1222,22 @@ async def run_bot():
         await application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, timeout=30)
     except (NetworkError, TelegramError) as e:
         logger.error(f"Polling failed: {e}. Restarting after cleanup...")
-        await application.stop()
     except Exception as e:
         logger.critical(f"Fatal error: {e}. Restarting after cleanup...")
-        await application.stop()
+    finally:
+        await application.shutdown()
+        logger.info("Application shut down gracefully.")
 
-if __name__ == "__main__":
-    asyncio.run(run_bot())
+async def main():
     while True:
         try:
-            asyncio.run(run_bot())
+            await run_bot()
         except (NetworkError, TelegramError) as e:
             logger.error(f"Polling error: {e}. Restarting in 5 seconds...")
-            time.sleep(5)
+            await asyncio.sleep(5)
         except Exception as e:
             logger.critical(f"Fatal error: {e}. Restarting in 10 seconds...")
-            time.sleep(10)
+            await asyncio.sleep(10)
+
+if __name__ == "__main__":
+    asyncio.run(main())
