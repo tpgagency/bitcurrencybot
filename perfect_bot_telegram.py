@@ -10,6 +10,7 @@ from telegram.error import NetworkError, RetryAfter, TelegramError
 from collections import deque
 from telegram.constants import ParseMode
 from typing import Optional, Tuple
+import asyncio
 
 # Настройка детализированного логирования
 logging.basicConfig(
@@ -187,7 +188,7 @@ def check_limit(user_id: str) -> Tuple[bool, str]:
         logger.error(f"Error checking limit for {user_id}: {e}")
         return False, "0"
 
-def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0) -> Tuple[Optional[float], str]:
+async def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0) -> Tuple[Optional[float], str]:
     from_key = from_currency.lower()
     to_key = to_currency.lower()
     
@@ -204,7 +205,7 @@ def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0)
         return amount, f"1 {from_code} = 1 {to_code}"
 
     # Функция для получения курса с повторными попытками
-    def fetch_rate(api_url: str, pair: str, reverse: bool = False, retries: int = MAX_RETRIES) -> Optional[float]:
+    async def fetch_rate(api_url: str, pair: str, reverse: bool = False, retries: int = MAX_RETRIES) -> Optional[float]:
         for attempt in range(retries):
             try:
                 response = requests.get(f"{api_url}?symbol={pair}", timeout=5).json()
@@ -216,10 +217,10 @@ def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0)
             except (requests.RequestException, ValueError, KeyError) as e:
                 logger.warning(f"Fetch attempt {attempt + 1}/{retries} failed for {pair} from {api_url}: {e}")
                 if attempt < retries - 1:
-                    time.sleep(0.5)
+                    await asyncio.sleep(0.5)
         return None
 
-    def fetch_whitebit_rate(pair: str, reverse: bool = False, retries: int = MAX_RETRIES) -> Optional[float]:
+    async def fetch_whitebit_rate(pair: str, reverse: bool = False, retries: int = MAX_RETRIES) -> Optional[float]:
         for attempt in range(retries):
             try:
                 response = requests.get(WHITEBIT_API_URL, timeout=5).json()
@@ -229,66 +230,52 @@ def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0)
                         raise ValueError(f"Invalid rate for {pair}: {rate}")
                     return 1 / rate if reverse else rate
             except (requests.RequestException, ValueError, KeyError) as e:
-                logger.warning(f"Fetch attempt {attempt + 1}/{retries} failed for {pair} from WhiteBIT: {e}")
+                logger.warning(f"Fetch attempt {amount + 1}/{retries} failed for {pair} from WhiteBIT: {e}")
                 if attempt < retries - 1:
-                    time.sleep(0.5)
+                    await asyncio.sleep(0.5)
         return None
 
-    # Получение курса в реальном времени с приоритетом
-    rate = None
-    source = "unknown"
+    # Параллельные запросы к Binance и WhiteBIT
+    async def get_rates():
+        binance_task = fetch_rate(BINANCE_API_URL, f"{from_code}{to_code}")
+        binance_reverse_task = fetch_rate(BINANCE_API_URL, f"{to_code}{from_code}", reverse=True)
+        whitebit_task = fetch_whitebit_rate(f"{from_code}_{to_code}")
+        whitebit_reverse_task = fetch_whitebit_rate(f"{to_code}_{from_code}", reverse=True)
+        
+        binance_rate, binance_reverse_rate, whitebit_rate, whitebit_reverse_rate = await asyncio.gather(
+            binance_task, binance_reverse_task, whitebit_task, whitebit_reverse_task
+        )
+        return binance_rate, binance_reverse_rate, whitebit_rate, whitebit_reverse_rate
 
-    # Прямой курс Binance
-    rate = fetch_rate(BINANCE_API_URL, f"{from_code}{to_code}")
-    if rate and rate > 0:
-        source = "Binance"
+    binance_rate, binance_reverse_rate, whitebit_rate, whitebit_reverse_rate = await get_rates()
 
-    # Обратный курс Binance с коррекцией
-    if not rate:
-        rate_reverse = fetch_rate(BINANCE_API_URL, f"{to_code}{from_code}", reverse=True)
-        if rate_reverse and rate_reverse > 0:
-            rate = 1 / rate_reverse
-            source = "Binance (reverse)"
+    # Выбор первого доступного курса
+    rate = binance_rate if binance_rate and binance_rate > 0 else None
+    if not rate and binance_reverse_rate and binance_reverse_rate > 0:
+        rate = 1 / binance_reverse_rate
+    if not rate and whitebit_rate and whitebit_rate > 0:
+        rate = whitebit_rate
+    if not rate and whitebit_reverse_rate and whitebit_reverse_rate > 0:
+        rate = 1 / whitebit_reverse_rate
 
-    # Прямой курс WhiteBIT
-    if not rate:
-        rate = fetch_whitebit_rate(f"{from_code}_{to_code}")
-        if rate and rate > 0:
-            source = "WhiteBIT"
-
-    # Обратный курс WhiteBIT
-    if not rate:
-        rate_reverse = fetch_whitebit_rate(f"{to_code}_{from_code}", reverse=True)
-        if rate_reverse and rate_reverse > 0:
-            rate = 1 / rate_reverse
-            source = "WhiteBIT (reverse)"
-
-    # Косвенная конвертация через USDT в реальном времени
+    # Косвенная конвертация через USDT, если прямой курс отсутствует
     if not rate and (from_key != 'usdt' or to_key != 'usdt'):
-        rate_from_usdt_binance = fetch_rate(BINANCE_API_URL, f"{from_code}USDT") or fetch_rate(BINANCE_API_URL, f"USDT{from_code}", reverse=True)
-        rate_to_usdt_binance = fetch_rate(BINANCE_API_URL, f"USDT{to_code}") or fetch_rate(BINANCE_API_URL, f"{to_code}USDT", reverse=True)
+        rate_from_usdt_binance = await fetch_rate(BINANCE_API_URL, f"{from_code}USDT")
+        rate_to_usdt_binance = await fetch_rate(BINANCE_API_URL, f"USDT{to_code}", reverse=True)
         if rate_from_usdt_binance and rate_to_usdt_binance and rate_from_usdt_binance > 0 and rate_to_usdt_binance > 0:
             rate = rate_from_usdt_binance / rate_to_usdt_binance if to_key != 'usdt' else rate_from_usdt_binance
-            source = "Binance via USDT"
 
-    # Проверка корректности направления
-    if rate:
-        expected_ranges = {
-            ('eur', 'uah'): (40, 45),
-            ('eur', 'rub'): (100, 110),
-            ('eur', 'usdt'): (0.95, 1.05),  # Реальный диапазон на февраль 2025
-            ('usdt', 'uah'): (40, 42),
-            ('usdt', 'eur'): (0.95, 1.05)   # Реальный диапазон на февраль 2025
-        }
-        if (from_key, to_key) in expected_ranges and rate < 1 and expected_ranges[(from_key, to_key)][0] > 1:
-            rate = 1 / rate
-            source += " (inverted)"
+        if not rate:
+            rate_from_usdt_whitebit = await fetch_whitebit_rate(f"{from_code}_USDT")
+            rate_to_usdt_whitebit = await fetch_whitebit_rate(f"USDT_{to_code}", reverse=True)
+            if rate_from_usdt_whitebit and rate_to_usdt_whitebit and rate_from_usdt_whitebit > 0 and rate_to_usdt_whitebit > 0:
+                rate = rate_from_usdt_whitebit / rate_to_usdt_whitebit if to_key != 'usdt' else rate_from_usdt_whitebit
 
     if rate and rate > 0:
-        return amount * rate, f"1 {from_code} = {rate:.6f} {to_code} ({source})"
+        return amount * rate, f"1 {from_code} = {rate:.6f} {to_code}"
 
     logger.error(f"No rate found for {from_key} to {to_key}")
-    return None, "Курс недоступен: данные отсутствуют с API"
+    return None, "Курс недоступен: данные отсутствуют"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await enforce_subscription(update, context):
@@ -593,7 +580,7 @@ async def check_payment_job(context: ContextTypes.DEFAULT_TYPE):
                 except requests.RequestException as e:
                     logger.warning(f"Payment check attempt {attempt + 1}/{MAX_RETRIES} failed for {user_id}: {e}")
                     if attempt < MAX_RETRIES - 1:
-                        time.sleep(2 ** attempt)
+                        await asyncio.sleep(2 ** attempt)
                     else:
                         logger.error(f"Failed payment check for {user_id} after retries")
     except Exception as e:
@@ -609,7 +596,7 @@ async def check_alerts_job(context: ContextTypes.DEFAULT_TYPE):
             updated_alerts = []
             for alert in alerts:
                 from_currency, to_currency, target_rate = alert["from"], alert["to"], alert["target"]
-                result, rate_info = get_exchange_rate(from_currency, to_currency)
+                result, rate_info = await get_exchange_rate(from_currency, to_currency)
                 if result and float(rate_info.split()[2]) <= target_rate:
                     from_code = CURRENCIES[from_currency]['code']
                     to_code = CURRENCIES[to_currency]['code']
@@ -678,7 +665,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.debug(f"Parsed: amount={amount}, from={from_currency}, to={to_currency}")
         
         save_stats(user_id, f"{from_currency}_to_{to_currency}")
-        result, rate_info = get_exchange_rate(from_currency, to_currency, amount)
+        result, rate_info = await get_exchange_rate(from_currency, to_currency, amount)
         if result is not None:
             from_code = CURRENCIES[from_currency.lower()]['code']
             to_code = CURRENCIES[to_currency.lower()]['code']
@@ -693,7 +680,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 await update.effective_message.reply_text(
                     f"💰 *{amount:.1f} {from_code}* = *{result:.{precision}f} {to_code}*\n"
-                    f"📈 {rate_info}\n"
+                    f"📈 1 {from_code} = {float(rate_info.split()[2]):.6f} {to_code}\n"
                     f"🔄 Осталось запросов: *{remaining_display}*{AD_MESSAGE}",
                     reply_markup=reply_markup,
                     parse_mode=ParseMode.MARKDOWN
@@ -738,7 +725,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except TelegramError as e:
             logger.warning(f"Callback answer attempt {attempt + 1}/{MAX_RETRIES} failed for {query.from_user.id}: {e}")
             if attempt < MAX_RETRIES - 1:
-                time.sleep(0.5)
+                await asyncio.sleep(0.5)
             else:
                 logger.error(f"Failed to answer callback for {query.from_user.id}: {e}")
     
@@ -954,7 +941,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except TelegramError as e:
                 logger.warning(f"Copy_ref answer attempt {attempt + 1}/{MAX_RETRIES} failed for {user_id}: {e}")
                 if attempt < MAX_RETRIES - 1:
-                    time.sleep(0.5)
+                    await asyncio.sleep(0.5)
                 else:
                     logger.error(f"Failed to answer copy_ref for {user_id}: {e}")
         refs = len(json.loads(redis_client.get(f"referrals:{user_id}") or '[]'))
@@ -977,7 +964,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif action.startswith("convert:"):
         _, from_currency, to_currency = action.split(":")
-        result, rate_info = get_exchange_rate(from_currency, to_currency)
+        result, rate_info = await get_exchange_rate(from_currency, to_currency)
         if result is not None:
             from_code = CURRENCIES[from_currency]['code']
             to_code = CURRENCIES[to_currency]['code']
@@ -991,7 +978,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 await query.edit_message_text(
                     f"💰 *1.0 {from_code}* = *{result:.{precision}f} {to_code}*\n"
-                    f"📈 {rate_info}\n"
+                    f"📈 1 {from_code} = {float(rate_info.split()[2]):.6f} {to_code}\n"
                     f"🔄 Осталось запросов: *{remaining}*{AD_MESSAGE}",
                     reply_markup=reply_markup,
                     parse_mode=ParseMode.MARKDOWN
@@ -1147,7 +1134,7 @@ async def retry_edit(query: Update.callback_query, context: ContextTypes.DEFAULT
                 )
             elif command == "convert":
                 _, from_currency, to_currency = query.data.split(":")
-                result, rate_info = get_exchange_rate(from_currency, to_currency)
+                result, rate_info = await get_exchange_rate(from_currency, to_currency)
                 if result is not None:
                     from_code = CURRENCIES[from_currency]['code']
                     to_code = CURRENCIES[to_currency]['code']
@@ -1160,7 +1147,7 @@ async def retry_edit(query: Update.callback_query, context: ContextTypes.DEFAULT
                     reply_markup = InlineKeyboardMarkup(keyboard)
                     await query.edit_message_text(
                         f"💰 *1.0 {from_code}* = *{result:.{precision}f} {to_code}*\n"
-                        f"📈 {rate_info}\n"
+                        f"📈 1 {from_code} = {float(rate_info.split()[2]):.6f} {to_code}\n"
                         f"🔄 Осталось запросов: *{remaining}*{AD_MESSAGE}",
                         reply_markup=reply_markup,
                         parse_mode=ParseMode.MARKDOWN
@@ -1174,7 +1161,7 @@ async def retry_edit(query: Update.callback_query, context: ContextTypes.DEFAULT
         except TelegramError as e:
             logger.warning(f"Retry edit attempt {attempt + 2}/{MAX_RETRIES} failed for {command}: {e}")
             if attempt < MAX_RETRIES - 2:
-                time.sleep(0.5)
+                await asyncio.sleep(0.5)
             else:
                 logger.error(f"Failed to retry edit for {command} after retries: {e}")
 
