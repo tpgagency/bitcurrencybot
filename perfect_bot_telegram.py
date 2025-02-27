@@ -3,6 +3,7 @@ import json
 import time
 import logging
 import requests
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -523,6 +524,52 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"❌ Ошибка: {escape_markdown_v2(rate_info)}", parse_mode=ParseMode.MARKDOWN_V2)
     elif action == "manual_convert":
         await query.edit_message_text("💱 *Введи запрос вручную*: например, '100 uah usdt'", parse_mode=ParseMode.MARKDOWN_V2)
+    elif action == "stats":
+        await stats(update, context)
+    elif action == "subscribe":
+        await subscribe(update, context)
+    elif action == "alert":
+        await alert(update, context)
+    elif action == "referrals":
+        await referrals(update, context)
+    elif action == "history":
+        await history(update, context)
+    elif action == "copy_ref":
+        ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{user_id}"
+        refs = len(json.loads(redis_client.get(f"referrals:{user_id}") or '[]'))
+        await query.edit_message_text(
+            f"👥 *Реф\\. ссылка*: `{ref_link}`\n👤 Приглашено: *{refs}*\n🌟 Бонусы скоро будут\!",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔗 Копировать", callback_data="copy_ref"), InlineKeyboardButton("🔙 Назад", callback_data="start")]
+            ]),
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
+    elif action == "alert_example_usd_btc":
+        await query.edit_message_text(
+            "🔔 Пример: `/alert usd btc 0\\.000015` — уведомит, когда 1 USD = 0\\.000015 BTC",
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
+    elif action == "alert_example_eur_uah":
+        await query.edit_message_text(
+            "🔔 Пример: `/alert eur uah 45\\.0` — уведомит, когда 1 EUR = 45\\.0 UAH",
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
+    elif action == "price":
+        await query.edit_message_text(
+            "📈 *Выбери валюту для курса*:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("BTC", callback_data="convert:btc:usdt"), InlineKeyboardButton("ETH", callback_data="convert:eth:usdt")],
+                [InlineKeyboardButton("USD", callback_data="convert:usd:uah"), InlineKeyboardButton("EUR", callback_data="convert:eur:uah")],
+                [InlineKeyboardButton("🔙 Назад", callback_data="start")]
+            ]),
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
+
+async def shutdown(application):
+    """Очистка перед завершением приложения"""
+    await application.stop()
+    await application.job_queue.stop()
+    logger.info("Application shutdown complete")
 
 def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
@@ -544,7 +591,15 @@ def main():
         redis_client.setex('stats', 30 * 24 * 60 * 60, json.dumps({"users": {}, "total_requests": 0, "request_types": {}, "subscriptions": {}, "revenue": 0.0}))
 
     logger.info("Bot starting...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, timeout=30)
+    try:
+        asyncio.run(app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, timeout=30))
+    except KeyboardInterrupt:
+        asyncio.run(shutdown(app))
+    except Exception as e:
+        logger.critical(f"Fatal error: {e}. Retrying in 10 seconds...")
+        asyncio.run(shutdown(app))
+        time.sleep(10)
+        main()
 
 async def set_bot_commands(application):
     await application.bot.set_my_commands([
@@ -559,19 +614,4 @@ async def set_bot_commands(application):
     logger.info("Bot commands set")
 
 if __name__ == "__main__":
-    import asyncio
-    loop = asyncio.get_event_loop()
-    while True:
-        try:
-            loop.run_until_complete(main())
-        except TelegramError as e:
-            logger.error(f"Telegram error: {e}. Retrying in 5 seconds...")
-            time.sleep(5)
-        except Exception as e:
-            logger.critical(f"Fatal error: {e}. Retrying in 10 seconds...")
-            time.sleep(10)
-        finally:
-            pending = asyncio.all_tasks(loop)
-            for task in pending:
-                task.cancel()
-            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+    main()
