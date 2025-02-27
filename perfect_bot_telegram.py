@@ -7,12 +7,13 @@ import aiohttp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import (
-    ApplicationBuilder,
+    Application,
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
     filters,
     ContextTypes,
+    JobQueue,
 )
 import redis
 from telegram.error import TelegramError
@@ -40,7 +41,7 @@ if not TELEGRAM_TOKEN or not CRYPTO_PAY_TOKEN:
 AD_MESSAGE = "\n\n📢 Подпишись на @tpgbit для новостей о крипте\\!"
 FREE_REQUEST_LIMIT = 5
 SUBSCRIPTION_PRICE = 5
-CACHE_TIMEOUT = 60  # Уменьшено для более частого обновления курсов
+CACHE_TIMEOUT = 60
 ADMIN_IDS = {"1058875848", "6403305626"}
 HISTORY_LIMIT = 20
 MAX_RETRIES = 3
@@ -641,8 +642,10 @@ async def shutdown(application):
     await application.job_queue.stop()
     logger.info("Application shutdown complete")
 
-def main():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+async def main():
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    # Регистрация обработчиков
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("currencies", currencies))
     app.add_handler(CommandHandler("alert", alert))
@@ -653,23 +656,31 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(button))
 
-    app.job_queue.run_repeating(check_payment_job, interval=60, name="check_payment")
-    app.job_queue.run_repeating(check_alerts_job, interval=60, name="check_alerts")
-    app.post_init = set_bot_commands
+    # Инициализация job_queue
+    job_queue = app.job_queue
+    if job_queue:
+        job_queue.run_repeating(check_payment_job, interval=60, name="check_payment")
+        job_queue.run_repeating(check_alerts_job, interval=60, name="check_alerts")
+    else:
+        logger.critical("JobQueue is not initialized!")
+        return
+
+    # Установка команд
+    await set_bot_commands(app)
 
     if not redis_client.exists('stats'):
         redis_client.setex('stats', 30 * 24 * 60 * 60, json.dumps({"users": {}, "total_requests": 0, "request_types": {}, "subscriptions": {}, "revenue": 0.0}))
 
     logger.info("Bot starting...")
     try:
-        asyncio.run(app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, timeout=30))
+        await app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, timeout=30)
     except KeyboardInterrupt:
-        asyncio.run(shutdown(app))
+        await shutdown(app)
     except Exception as e:
         logger.critical(f"Fatal error: {e}. Retrying in 10 seconds...")
-        asyncio.run(shutdown(app))
+        await shutdown(app)
         time.sleep(10)
-        main()
+        await main()
 
 async def set_bot_commands(application):
     await application.bot.set_my_commands([
@@ -684,4 +695,4 @@ async def set_bot_commands(application):
     logger.info("Bot commands set")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
