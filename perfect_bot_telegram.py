@@ -722,7 +722,7 @@ async def set_bot_commands(application: Application):
     except TelegramError as e:
         logger.error(f"Failed to set bot commands: {e}")
 
-async def main():
+def main():
     try:
         logger.info("Initializing application...")
         app = Application.builder().token(TELEGRAM_TOKEN).build()
@@ -747,24 +747,20 @@ async def main():
         app.job_queue.run_repeating(check_alerts_job, interval=60, name="check_alerts")
 
         logger.info("Initializing bot...")
-        await app.initialize()
+        asyncio.get_event_loop().run_until_complete(app.initialize())
 
         logger.info("Setting bot commands...")
-        await set_bot_commands(app)
+        asyncio.get_event_loop().run_until_complete(set_bot_commands(app))
 
         if not redis_client.exists('stats'):
             logger.info("Initializing stats in Redis...")
             redis_client.setex('stats', 30 * 24 * 60 * 60, json.dumps({"users": {}, "total_requests": 0, "request_types": {}, "subscriptions": {}, "revenue": 0.0}))
 
         logger.info("Bot starting polling...")
-        await app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, timeout=30)
+        app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, timeout=30)
     except Exception as e:
         logger.critical(f"Fatal error in main: {e}")
         raise
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except Exception as e:
-        logger.critical(f"Unexpected error at startup: {e}")
-        exit(1)
+    main()
