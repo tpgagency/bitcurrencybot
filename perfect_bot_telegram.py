@@ -126,7 +126,7 @@ def save_history(user_id: str, from_currency: str, to_currency: str, amount: flo
     try:
         history = deque(json.loads(redis_client.get(f"history:{user_id}") or '[]'), maxlen=HISTORY_LIMIT)
         history.append({
-            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "time": escape_markdown_v2(time.strftime("%Y-%m-%d %H:%M:%S")),
             "from": from_currency,
             "to": to_currency,
             "amount": amount,
@@ -176,6 +176,7 @@ def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0)
             logger.warning(f"Error fetching rate from {api_name}: {e}")
             return None
 
+    # Попытка прямого получения курса
     sources = [
         (f"{BINANCE_API_URL}?symbol={from_code}{to_code}", 'price', False, "Binance direct"),
         (f"{BINANCE_API_URL}?symbol={to_code}{from_code}", 'price', True, "Binance reverse"),
@@ -184,34 +185,39 @@ def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0)
     ]
 
     for url, pair, reverse, source in sources:
-        rate = fetch_rate(url, 'price' if 'binance' in url else pair, reverse, source.split()[0])
+        rate = fetch_rate(url, 'price' if 'binance' in url else pair, reverse, source)
         if rate:
             redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
             formatted_rate = rate if not reverse else 1/rate
             return amount * formatted_rate, f"1 {from_code} \\= {escape_markdown_v2(str(formatted_rate))} {to_code} \\({escape_markdown_v2(source)}\\)"
 
+    # Использование bridge-валют с приоритетом USDT
     for bridge in ('USDT', 'BTC'):
         if from_key != bridge.lower() and to_key != bridge.lower():
-            rate_from = fetch_rate(f"{BINANCE_API_URL}?symbol={from_code}{bridge}", 'price')
+            rate_from = fetch_rate(f"{BINANCE_API_URL}?symbol={from_code}{bridge}", 'price', False, f"Binance {from_code}{bridge}")
             if not rate_from:
-                rate_from = fetch_rate(f"{BINANCE_API_URL}?symbol={bridge}{from_code}", 'price', True)
-            rate_to = fetch_rate(f"{BINANCE_API_URL}?symbol={bridge}{to_code}", 'price')
+                rate_from = fetch_rate(f"{BINANCE_API_URL}?symbol={bridge}{from_code}", 'price', True, f"Binance {bridge}{from_code}")
+            rate_to = fetch_rate(f"{BINANCE_API_URL}?symbol={to_code}{bridge}", 'price', True, f"Binance {to_code}{bridge}")
             if not rate_to:
-                rate_to = fetch_rate(f"{BINANCE_API_URL}?symbol={to_code}{bridge}", 'price', True)
+                rate_to = fetch_rate(f"{BINANCE_API_URL}?symbol={bridge}{to_code}", 'price', False, f"Binance {bridge}{to_code}")
             if rate_from and rate_to:
                 bridge_rate = rate_from * (1 / rate_to)
                 if bridge_rate > 0:
                     redis_client.setex(cache_key, CACHE_TIMEOUT, bridge_rate)
                     return amount * bridge_rate, f"1 {from_code} \\= {escape_markdown_v2(str(bridge_rate))} {to_code} \\(Binance via {bridge}\\)"
 
+    # Fallback для UAH-USDT и USDT-UAH
     if from_key == 'uah' and to_key == 'usdt':
         rate = UAH_TO_USDT_FALLBACK
+        redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
+        return amount * rate, f"1 {from_key.upper()} \\= {escape_markdown_v2(str(rate))} {to_key.upper()} \\(fallback\\)"
     elif from_key == 'usdt' and to_key == 'uah':
         rate = USDT_TO_UAH_FALLBACK
-    else:
-        return None, "Курс недоступен"
-    redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
-    return amount * rate, f"1 {from_key.upper()} \\= {escape_markdown_v2(str(rate))} {to_key.upper()} \\(fallback\\)"
+        redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
+        return amount * rate, f"1 {from_key.upper()} \\= {escape_markdown_v2(str(rate))} {to_key.upper()} \\(fallback\\)"
+
+    # Если ничего не удалось, возвращаем ошибку
+    return None, "Курс недоступен на данный момент"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await enforce_subscription(update, context):
