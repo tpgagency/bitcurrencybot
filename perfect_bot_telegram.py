@@ -176,7 +176,7 @@ async def fetch_kucoin_rate(session: aiohttp.ClientSession, from_code: str, to_c
 
 async def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0) -> Tuple[Optional[float], str]:
     from_key, to_key = from_currency.lower(), to_currency.lower()
-    if from_key not in CURRENCIES or to_key not in CURRENCIES:
+    if from_key not in CURENCIES or to_key not in CURENCIES:
         return None, "Неподдерживаемая валюта"
     
     cache_key = f"rate:{from_key}_{to_key}"
@@ -185,7 +185,7 @@ async def get_exchange_rate(from_currency: str, to_currency: str, amount: float 
         rate = float(cached)
         return amount * rate, f"1 {from_key.upper()} \\= {escape_markdown_v2(str(rate))} {to_key.upper()} \\(cached\\)"
 
-    from_code, to_code = CURRENCIES[from_key]['code'], CURENCIES[to_key]['code']
+    from_code, to_code = CURENCIES[from_key]['code'], CURENCIES[to_key]['code']
     if from_key == to_key:
         redis_client.setex(cache_key, CACHE_TIMEOUT, 1.0)
         return amount, f"1 {from_key.upper()} \\= 1 {to_key.upper()}"
@@ -669,12 +669,7 @@ async def main():
         redis_client.setex('stats', 30 * 24 * 60 * 60, json.dumps({"users": {}, "total_requests": 0, "request_types": {}, "subscriptions": {}, "revenue": 0.0}))
 
     logger.info("Bot starting...")
-    try:
-        await app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, timeout=30)
-    finally:
-        await app.stop()
-        await app.shutdown()
-        logger.info("Bot stopped cleanly")
+    await app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, timeout=30)
 
 if __name__ == "__main__":
     asyncio.run(main())
