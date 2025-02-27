@@ -81,7 +81,7 @@ if not init_redis_connection():
     exit(1)
 
 def escape_markdown_v2(text: str) -> str:
-    reserved_chars = r'_*[]()~`>#+-=|{}.!'
+    reserved_chars = r'_*\[\]()~`>#+-=|{}!'
     for char in reserved_chars:
         text = text.replace(char, f'\\{char}')
     return text
@@ -158,20 +158,26 @@ async def fetch_rate(session: aiohttp.ClientSession, url: str, key: str, reverse
     try:
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as response:
             data = await response.json()
-            rate = float(data[key if not reverse else 'price'])
-            return 1 / rate if reverse and rate > 0 else rate if rate > 0 else None
+            logger.debug(f"API response from {api_name}: {data}")
+            rate = float(data.get(key if not reverse else 'price', 0))
+            if rate <= 0:
+                raise ValueError("Rate is zero or negative")
+            return 1 / rate if reverse else rate
     except (aiohttp.ClientError, ValueError, KeyError, TypeError) as e:
-        logger.warning(f"Error fetching rate from {api_name}: {e}")
+        logger.warning(f"Error fetching rate from {api_name}: {str(e)}")
         return None
 
 async def fetch_kucoin_rate(session: aiohttp.ClientSession, from_code: str, to_code: str) -> Optional[float]:
     try:
         async with session.get(KUCOIN_API_URL, timeout=aiohttp.ClientTimeout(total=5)) as response:
             data = await response.json()
+            logger.debug(f"KuCoin API response: {data}")
             ticker = f"{from_code}-{to_code}"
             for item in data['data']['ticker']:
                 if item['symbol'] == ticker:
-                    return float(item['last'])
+                    rate = float(item['last'])
+                    if rate > 0:
+                        return rate
             return None
     except (aiohttp.ClientError, ValueError, KeyError, TypeError) as e:
         logger.warning(f"Error fetching rate from KuCoin: {e}")
@@ -200,12 +206,12 @@ async def get_exchange_rate(from_currency: str, to_currency: str, amount: float 
         sources = [
             (f"{BINANCE_API_URL}?symbol={from_code}{to_code}", 'price', False, "Binance direct"),
             (f"{BINANCE_API_URL}?symbol={to_code}{from_code}", 'price', True, "Binance reverse"),
-            (WHITEBIT_API_URL, f"{from_code}_{to_code}", False, "WhiteBIT direct"),
-            (WHITEBIT_API_URL, f"{to_code}_{from_code}", True, "WhiteBIT reverse"),
+            (f"{WHITEBIT_API_URL}", f"{from_code}_{to_code}", False, "WhiteBIT direct"),
+            (f"{WHITEBIT_API_URL}", f"{to_code}_{from_code}", True, "WhiteBIT reverse"),
         ]
 
-        for url, pair, reverse, source in sources:
-            rate = await fetch_rate(session, url, 'price' if 'binance' in url else pair, reverse, source)
+        for url, key, reverse, source in sources:
+            rate = await fetch_rate(session, url, key, reverse, source)
             if rate:
                 redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
                 formatted_rate = rate if not reverse else 1/rate
@@ -216,22 +222,23 @@ async def get_exchange_rate(from_currency: str, to_currency: str, amount: float 
             redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
             return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\(KuCoin\\)"
 
-        for bridge in ('USDT', 'BTC'):
-            if from_key != bridge.lower() and to_key != bridge.lower():
-                rate_from = await fetch_rate(session, f"{BINANCE_API_URL}?symbol={from_code}{bridge}", 'price', False, f"Binance {from_code}{bridge}")
-                if not rate_from:
-                    rate_from = await fetch_rate(session, f"{BINANCE_API_URL}?symbol={bridge}{from_code}", 'price', True, f"Binance {bridge}{from_code}")
-                
-                rate_to = await fetch_rate(session, f"{BINANCE_API_URL}?symbol={bridge}{to_code}", 'price', False, f"Binance {bridge}{to_code}")
-                if not rate_to:
-                    rate_to = await fetch_rate(session, f"{BINANCE_API_URL}?symbol={to_code}{bridge}", 'price', True, f"Binance {to_code}{bridge}")
+        # Используем USDT как мост
+        if from_key != 'usdt' and to_key != 'usdt':
+            rate_from_usdt = await fetch_rate(session, f"{BINANCE_API_URL}?symbol={from_code}USDT", 'price', False, f"Binance {from_code}USDT")
+            if not rate_from_usdt:
+                rate_from_usdt = await fetch_rate(session, f"{BINANCE_API_URL}?symbol=USDT{from_code}", 'price', True, f"Binance USDT{from_code}")
+            
+            rate_to_usdt = await fetch_rate(session, f"{BINANCE_API_URL}?symbol={to_code}USDT", 'price', False, f"Binance {to_code}USDT")
+            if not rate_to_usdt:
+                rate_to_usdt = await fetch_rate(session, f"{BINANCE_API_URL}?symbol=USDT{to_code}", 'price', True, f"Binance USDT{to_code}")
 
-                if rate_from and rate_to:
-                    rate = rate_from / rate_to if rate_to != 0 else None
-                    if rate and rate > 0:
-                        redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
-                        return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\(Binance via {bridge}\\)"
+            if rate_from_usdt and rate_to_usdt:
+                rate = rate_from_usdt / rate_to_usdt if rate_to_usdt != 0 else None
+                if rate and rate > 0:
+                    redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
+                    return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\(Binance via USDT\\)"
 
+        # Fallback для UAH
         if from_key == 'uah' and to_key == 'usdt':
             rate = UAH_TO_USDT_FALLBACK
             redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
@@ -463,7 +470,7 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             history_lines = []
             for entry in reversed(history_data):
-                time_str = escape_markdown_v2(entry['time'])  # Экранируем дату полностью
+                time_str = entry['time'].replace('-', '\\-')  # Явно экранируем '-'
                 amount_str = escape_markdown_v2(str(entry['amount']))
                 result_str = escape_markdown_v2(str(entry['result']))
                 from_curr = escape_markdown_v2(entry['from'])
