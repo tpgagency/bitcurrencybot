@@ -4,7 +4,7 @@ import time
 import logging
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.constants import ParseMode  # Исправлен импорт для версии 21.4
+from telegram.constants import ParseMode
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -18,7 +18,6 @@ from telegram.error import TelegramError
 from collections import deque
 from typing import Optional, Tuple
 
-# Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -26,7 +25,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Конфигурация
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 CRYPTO_PAY_TOKEN = os.getenv('CRYPTO_PAY_TOKEN')
 REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
@@ -38,7 +36,7 @@ if not TELEGRAM_TOKEN or not CRYPTO_PAY_TOKEN:
     logger.critical("Missing TELEGRAM_TOKEN or CRYPTO_PAY_TOKEN")
     exit(1)
 
-AD_MESSAGE = "\n\n📢 Подпишись на @tpgbit для новостей о крипте!"
+AD_MESSAGE = "\n\n📢 Подпишись на @tpgbit для новостей о крипте\!"
 FREE_REQUEST_LIMIT = 5
 SUBSCRIPTION_PRICE = 5
 CACHE_TIMEOUT = 300
@@ -47,11 +45,9 @@ HISTORY_LIMIT = 20
 MAX_RETRIES = 3
 HIGH_PRECISION_CURRENCIES = {'BTC', 'ETH', 'XRP', 'DOGE', 'ADA', 'SOL', 'LTC', 'BNB', 'TRX', 'DOT', 'MATIC'}
 
-# API endpoints
 BINANCE_API_URL = "https://api.binance.com/api/v3/ticker/price"
 WHITEBIT_API_URL = "https://whitebit.com/api/v1/public/ticker"
 
-# Поддерживаемые валюты
 CURRENCIES = {
     'usd': {'code': 'USDT'}, 'uah': {'code': 'UAH'}, 'eur': {'code': 'EUR'},
     'rub': {'code': 'RUB'}, 'jpy': {'code': 'JPY'}, 'cny': {'code': 'CNY'},
@@ -100,7 +96,8 @@ async def enforce_subscription(update: Update, context: ContextTypes.DEFAULT_TYP
     if await check_subscription(context, user_id):
         return True
     await update.effective_message.reply_text(
-        "🚫 Подпишись на @tpgbit, чтобы продолжить!", parse_mode=ParseMode.MARKDOWN_V2
+        "🚫 Подпишись на @tpgbit, чтобы продолжить\!",
+        parse_mode=ParseMode.MARKDOWN_V2
     )
     return False
 
@@ -217,9 +214,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📜 История", callback_data="history")]
     ]
     await update.effective_message.reply_text(
-        f"👋 *Привет!* Я {BOT_USERNAME} — твой помощник для конвертации валют!\n"
-        f"🔑 *Бесплатно:* {FREE_REQUEST_LIMIT} запросов в сутки\n"
-        f"🌟 *Безлимит:* /subscribe за {SUBSCRIPTION_PRICE} USDT{AD_MESSAGE}",
+        f"👋 *Привет*\! Я {BOT_USERNAME} — твой помощник для конвертации валют\!\n"
+        f"🔑 *Бесплатно*: {FREE_REQUEST_LIMIT} запросов в сутки\n"
+        f"🌟 *Безлимит*: /subscribe за {SUBSCRIPTION_PRICE} USDT{AD_MESSAGE}",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode=ParseMode.MARKDOWN_V2
     )
@@ -228,7 +225,7 @@ async def currencies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await enforce_subscription(update, context):
         return
     await update.effective_message.reply_text(
-        f"💱 *Поддерживаемые валюты:*\n{', '.join(sorted(CURRENCIES.keys()))}",
+        f"💱 *Поддерживаемые валюты*:\n{', '.join(sorted(CURRENCIES.keys()))}",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="start")]]),
         parse_mode=ParseMode.MARKDOWN_V2
     )
@@ -245,7 +242,7 @@ async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔙 Назад", callback_data="start")]
         ]
         await update.effective_message.reply_text(
-            "🔔 *Настрой уведомления!* Формат: `/alert <валюта1> <валюта2> <курс>`\nПримеры ниже:",
+            "🔔 *Настрой уведомления*\! Формат: `/alert <валюта1> <валюта2> <курс>`\nПримеры ниже:",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode=ParseMode.MARKDOWN_V2
         )
@@ -260,7 +257,7 @@ async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     alerts.append({"from": from_currency, "to": to_currency, "target": target_rate})
     redis_client.setex(f"alerts:{user_id}", 30 * 24 * 60 * 60, json.dumps(alerts))
     await update.effective_message.reply_text(
-        f"🔔 *Уведомление:* {from_currency.upper()} → {to_currency.upper()} при курсе {target_rate}",
+        f"🔔 *Уведомление*: {from_currency.upper()} → {to_currency.upper()} при курсе {target_rate}",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔔 Добавить ещё", callback_data="alert"), InlineKeyboardButton("🔙 Назад", callback_data="start")]
         ]),
@@ -273,11 +270,11 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     stats = json.loads(redis_client.get('stats') or '{}')
     keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="start")]]
-    text = (f"📊 *Админ-статистика:*\n"
+    text = (f"📊 *Админ-статистика*:\n"
             f"👥 Пользователей: {len(stats.get('users', {}))}\n"
             f"📈 Запросов: {stats.get('total_requests', 0)}\n"
             f"💰 Доход: {stats.get('revenue', 0.0)} USDT") if user_id in ADMIN_IDS else \
-           f"📊 *Твоя статистика:*\n📈 Запросов сегодня: {stats.get('users', {}).get(user_id, {}).get('requests', 0)}"
+           f"📊 *Твоя статистика*:\n📈 Запросов сегодня: {stats.get('users', {}).get(user_id, {}).get('requests', 0)}"
     await update.effective_message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
 
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -286,7 +283,7 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     stats = json.loads(redis_client.get('stats') or '{}')
     if stats.get("subscriptions", {}).get(user_id):
-        await update.effective_message.reply_text("💎 Ты уже подписан!", parse_mode=ParseMode.MARKDOWN_V2)
+        await update.effective_message.reply_text("💎 Ты уже подписан\!", parse_mode=ParseMode.MARKDOWN_V2)
         return
 
     try:
@@ -321,7 +318,7 @@ async def referrals(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{user_id}"
     refs = len(json.loads(redis_client.get(f"referrals:{user_id}") or '[]'))
     await update.effective_message.reply_text(
-        f"👥 *Реф. ссылка:* `{ref_link}`\n👤 Приглашено: *{refs}*\n🌟 Бонусы скоро будут!",
+        f"👥 *Реф. ссылка*: `{ref_link}`\n👤 Приглашено: *{refs}*\n🌟 Бонусы скоро будут\!",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔗 Копировать", callback_data="copy_ref"), InlineKeyboardButton("🔙 Назад", callback_data="start")]
         ]),
@@ -335,11 +332,12 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     history = json.loads(redis_client.get(f"history:{user_id}") or '[]')
     if not history:
         await update.effective_message.reply_text(
-            "📜 *История пуста.*", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="start")]]),
+            "📜 *История пуста*\.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="start")]]),
             parse_mode=ParseMode.MARKDOWN_V2
         )
         return
-    response = "📜 *История запросов:*\n" + "\n".join(
+    response = "📜 *История запросов*:\n" + "\n".join(
         f"⏰ {entry['time']}: *{entry['amount']} {entry['from']}* → *{entry['result']} {entry['to']}*"
         for entry in reversed(history)
     )
@@ -356,7 +354,7 @@ async def handle_referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
             referrals = json.loads(redis_client.get(f"referrals:{referrer_id}") or '[]')
             referrals.append(user_id)
             redis_client.setex(f"referrals:{referrer_id}", 30 * 24 * 60 * 60, json.dumps(referrals))
-            await update.effective_message.reply_text("👥 Спасибо за присоединение по реф. ссылке!", parse_mode=ParseMode.MARKDOWN_V2)
+            await update.effective_message.reply_text("👥 Спасибо за присоединение по реф. ссылке\!", parse_mode=ParseMode.MARKDOWN_V2)
 
 async def check_payment_job(context: ContextTypes.DEFAULT_TYPE):
     for user_id, data in list(context.user_data.items()):
@@ -374,7 +372,7 @@ async def check_payment_job(context: ContextTypes.DEFAULT_TYPE):
                 stats["revenue"] = stats.get("revenue", 0.0) + SUBSCRIPTION_PRICE
                 redis_client.setex('stats', 30 * 24 * 60 * 60, json.dumps(stats))
                 del context.user_data[user_id]
-                await context.bot.send_message(user_id, "💎 Оплата прошла! Безлимит активирован.", parse_mode=ParseMode.MARKDOWN_V2)
+                await context.bot.send_message(user_id, "💎 Оплата прошла\! Безлимит активирован\.", parse_mode=ParseMode.MARKDOWN_V2)
         except Exception as e:
             logger.error(f"Payment check error for {user_id}: {e}")
 
@@ -390,7 +388,7 @@ async def check_alerts_job(context: ContextTypes.DEFAULT_TYPE):
             if result and float(rate_info.split()[2]) <= alert["target"]:
                 from_code, to_code = CURRENCIES[alert["from"]]['code'], CURRENCIES[alert["to"]]['code']
                 await context.bot.send_message(
-                    user_id, f"🔔 *Уведомление!* {from_code} → {to_code}: {float(rate_info.split()[2]):.8f} (цель: {alert['target']})",
+                    user_id, f"🔔 *Уведомление*\! {from_code} → {to_code}: {float(rate_info.split()[2]):.8f} (цель: {alert['target']})",
                     parse_mode=ParseMode.MARKDOWN_V2
                 )
             else:
@@ -406,12 +404,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     delay = 1 if is_subscribed else 5
 
     if 'last_request' in context.user_data and time.time() - context.user_data['last_request'] < delay:
-        await update.effective_message.reply_text(f"⏳ Подожди {delay} секунд{'у' if delay == 1 else ''}!", parse_mode=ParseMode.MARKDOWN_V2)
+        await update.effective_message.reply_text(f"⏳ Подожди {delay} секунд{'у' if delay == 1 else ''}\!", parse_mode=ParseMode.MARKDOWN_V2)
         return
 
     can_proceed, remaining = check_limit(user_id)
     if not can_proceed:
-        await update.effective_message.reply_text(f"❌ Лимит {FREE_REQUEST_LIMIT} запросов исчерпан. /subscribe", parse_mode=ParseMode.MARKDOWN_V2)
+        await update.effective_message.reply_text(f"❌ Лимит {FREE_REQUEST_LIMIT} запросов исчерпан\. /subscribe", parse_mode=ParseMode.MARKDOWN_V2)
         return
 
     context.user_data['last_request'] = time.time()
@@ -448,19 +446,19 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     user_id = str(query.from_user.id)
     if not await enforce_subscription(update, context):
-        await query.edit_message_text("🚫 Подпишись на @tpgbit!", parse_mode=ParseMode.MARKDOWN_V2)
+        await query.edit_message_text("🚫 Подпишись на @tpgbit\!", parse_mode=ParseMode.MARKDOWN_V2)
         return
 
     stats = json.loads(redis_client.get('stats') or '{}')
     is_subscribed = user_id in ADMIN_IDS or stats.get("subscriptions", {}).get(user_id)
     delay = 1 if is_subscribed else 5
     if 'last_request' in context.user_data and time.time() - context.user_data['last_request'] < delay:
-        await query.edit_message_text(f"⏳ Подожди {delay} секунд{'у' if delay == 1 else ''}!", parse_mode=ParseMode.MARKDOWN_V2)
+        await query.edit_message_text(f"⏳ Подожди {delay} секунд{'у' if delay == 1 else ''}\!", parse_mode=ParseMode.MARKDOWN_V2)
         return
 
     can_proceed, remaining = check_limit(user_id)
     if not can_proceed:
-        await query.edit_message_text(f"❌ Лимит {FREE_REQUEST_LIMIT} запросов исчерпан. /subscribe", parse_mode=ParseMode.MARKDOWN_V2)
+        await query.edit_message_text(f"❌ Лимит {FREE_REQUEST_LIMIT} запросов исчерпан\. /subscribe", parse_mode=ParseMode.MARKDOWN_V2)
         return
 
     context.user_data['last_request'] = time.time()
@@ -470,7 +468,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await start(update, context)
     elif action == "converter":
         await query.edit_message_text(
-            "💱 *Выбери пару или введи вручную (например, '100 uah usdt'):*",
+            "💱 *Выбери пару или введи вручную (например, '100 uah usdt')*:",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("💰 USD → BTC", callback_data="convert:usd:btc"), InlineKeyboardButton("💶 EUR → UAH", callback_data="convert:eur:uah")],
                 [InlineKeyboardButton("₿ BTC → ETH", callback_data="convert:btc:eth"), InlineKeyboardButton("₴ UAH → USDT", callback_data="convert:uah:usdt")],
@@ -497,7 +495,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.edit_message_text(f"❌ Ошибка: {rate_info}", parse_mode=ParseMode.MARKDOWN_V2)
     elif action == "manual_convert":
-        await query.edit_message_text("💱 *Введи запрос вручную:* например, '100 uah usdt'", parse_mode=ParseMode.MARKDOWN_V2)
+        await query.edit_message_text("💱 *Введи запрос вручную*: например, '100 uah usdt'", parse_mode=ParseMode.MARKDOWN_V2)
 
 def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
