@@ -418,9 +418,9 @@ async def check_payment_job(context: ContextTypes.DEFAULT_TYPE):
                 redis_client.setex('stats', 30 * 24 * 60 * 60, json.dumps(stats))
                 del context.user_data[user_id]
                 await context.bot.send_message(
-                    user_id, 
-                    "💎 Оплата прошла\\! Безлимит активирован\\.", 
-                    parse_mode=ParseMode.M<|control697|>_V2
+                    user_id,
+                    "💎 Оплата прошла\\! Безлимит активирован\\.",
+                    parse_mode=ParseMode.MARKDOWN_V2
                 )
         except Exception as e:
             logger.error(f"Payment check error for {user_id}: {e}")
@@ -439,7 +439,7 @@ async def check_alerts_job(context: ContextTypes.DEFAULT_TYPE):
             if result and float(rate_info.split()[2]) <= alert["target"]:
                 from_code, to_code = CURRENCIES[alert["from"]]['code'], CURRENCIES[alert["to"]]['code']
                 await context.bot.send_message(
-                    user_id, 
+                    user_id,
                     f"🔔 *Уведомление*\! {from_code} → {to_code}: {escape_markdown_v2(str(float(rate_info.split()[2])))} \\(цель: {escape_markdown_v2(str(alert['target']))}\\)",
                     parse_mode=ParseMode.MARKDOWN_V2
                 )
@@ -627,11 +627,11 @@ def main():
 
 async def set_bot_commands(application):
     await application.bot.set_my_commands([
-        ("start", "Главное меню"), 
-        ("currencies", "Список валют"), 
+        ("start", "Главное меню"),
+        ("currencies", "Список валют"),
         ("stats", "Статистика"),
-        ("subscribe", "Подписка"), 
-        ("alert", "Уведомления"), 
+        ("subscribe", "Подписка"),
+        ("alert", "Уведомления"),
         ("referrals", "Рефералы"),
         ("history", "История запросов")
     ])
