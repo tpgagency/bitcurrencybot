@@ -194,12 +194,10 @@ def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0)
     # Bridge через USDT и BTC
     for bridge in ('USDT', 'BTC'):
         if from_key != bridge.lower() and to_key != bridge.lower():
-            # Курс from -> bridge
             rate_from = fetch_rate(f"{BINANCE_API_URL}?symbol={from_code}{bridge}", 'price', False, f"Binance {from_code}{bridge}")
             if not rate_from:
                 rate_from = fetch_rate(f"{BINANCE_API_URL}?symbol={bridge}{from_code}", 'price', True, f"Binance {bridge}{from_code}")
             
-            # Курс bridge -> to
             rate_to = fetch_rate(f"{BINANCE_API_URL}?symbol={bridge}{to_code}", 'price', False, f"Binance {bridge}{to_code}")
             if not rate_to:
                 rate_to = fetch_rate(f"{BINANCE_API_URL}?symbol={to_code}{bridge}", 'price', True, f"Binance {to_code}{bridge}")
@@ -219,6 +217,19 @@ def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0)
         rate = USDT_TO_UAH_FALLBACK
         redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
         return amount * rate, f"1 {from_key.upper()} \\= {escape_markdown_v2(str(rate))} {to_key.upper()} \\(fallback\\)"
+    elif from_key == 'uah' and to_key == 'eur':
+        rate_usdt = UAH_TO_USDT_FALLBACK
+        rate_eur = fetch_rate(f"{BINANCE_API_URL}?symbol=EURUSDT", 'price', True, "Binance EURUSDT")
+        if rate_eur:
+            rate = rate_usdt / rate_eur
+            redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
+            return amount * rate, f"1 {from_key.upper()} \\= {escape_markdown_v2(str(rate))} {to_key.upper()} \\(Binance via USDT\\)"
+    elif from_key == 'eur' and to_key == 'uah':
+        rate_usdt = fetch_rate(f"{BINANCE_API_URL}?symbol=EURUSDT", 'price', False, "Binance EURUSDT")
+        if rate_usdt:
+            rate = rate_usdt * USDT_TO_UAH_FALLBACK
+            redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
+            return amount * rate, f"1 {from_key.upper()} \\= {escape_markdown_v2(str(rate))} {to_key.upper()} \\(Binance via USDT\\)"
 
     return None, "Курс недоступен на данный момент"
 
