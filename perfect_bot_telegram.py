@@ -164,6 +164,7 @@ async def fetch_rate(session: aiohttp.ClientSession, url: str, key: str, reverse
             if rate <= 0:
                 logger.warning(f"{api_name} returned invalid rate: {rate}")
                 return None
+            logger.info(f"{api_name} rate: {rate}")
             return 1 / rate if reverse else rate
     except (aiohttp.ClientError, ValueError, KeyError, TypeError) as e:
         logger.warning(f"Error fetching rate from {api_name}: {str(e)}")
@@ -189,59 +190,57 @@ async def fetch_kucoin_rate(session: aiohttp.ClientSession, from_code: str, to_c
 async def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0) -> Tuple[Optional[float], str]:
     from_key, to_key = from_currency.lower(), to_currency.lower()
     if from_key not in CURRENCIES or to_key not in CURRENCIES:
+        logger.error(f"Unsupported currency pair: {from_key} to {to_key}")
         return None, "Неподдерживаемая валюта или неверный формат\\. Пример: `100\\.0 uah usdt`"
-
-    cache_key = f"rate:{from_key}_{to_key}"
-    cached = redis_client.get(cache_key)
-    if cached:
-        try:
-            rate = float(cached)
-            logger.info(f"Using cached rate for {from_key} to {to_key}: {rate}")
-            return amount * rate, f"1 {from_key.upper()} \\= {escape_markdown_v2(str(rate))} {to_key.upper()} \\(cached\\)"
-        except ValueError as e:
-            logger.warning(f"Invalid cached rate for {from_key}_{to_key}: {e}")
 
     from_code, to_code = CURRENCIES[from_key]['code'], CURRENCIES[to_key]['code']
     if from_key == to_key:
-        redis_client.setex(cache_key, CACHE_TIMEOUT, 1.0)
         return amount, f"1 {from_key.upper()} \\= 1 {to_key.upper()}"
 
     async with aiohttp.ClientSession() as session:
         # Прямые запросы для популярных пар
-        direct_pairs = {'BTCUSDT', 'ETHUSDT', 'EURUSDT'}
+        direct_pairs = {'BTCUSDT', 'ETHUSDT', 'EURUSDT', 'USDTUAH'}
         tasks = []
         if f"{from_code}{to_code}" in direct_pairs:
-            tasks.append(fetch_rate(session, f"{BINANCE_API_URL}?symbol={from_code}{to_code}", 'price', False, "Binance direct"))
+            tasks.append(fetch_rate(session, f"{BINANCE_API_URL}?symbol={from_code}{to_code}", 'price', False, f"Binance {from_code}{to_code}"))
         tasks.append(fetch_kucoin_rate(session, from_code, to_code))
 
         # Мост через USDT
         usdt_tasks = [
-            fetch_rate(session, f"{BINANCE_API_URL}?symbol={from_code}USDT", 'price', False, f"Binance {from_code}USDT"),
+            fetch_rate(session, f"{BINANCE_API_URL}?symbol={from_code}USDT", 'price', False, f"Binance {from_code}USDT") if from_code != 'USDT' else None,
             fetch_rate(session, f"{BINANCE_API_URL}?symbol={to_code}USDT", 'price', False, f"Binance {to_code}USDT") if to_code != 'USDT' else None
         ]
 
         # Выполняем все запросы параллельно
         results = await asyncio.gather(*(tasks + usdt_tasks), return_exceptions=True)
+        sources = [f"Binance {from_code}{to_code}", "KuCoin", f"Binance {from_code}USDT", f"Binance {to_code}USDT"]
 
-        valid_rates = []
-        sources = ["Binance direct", "KuCoin", f"Binance {from_code}USDT", f"Binance {to_code}USDT"]
-        for i, (rate, source) in enumerate(zip(results, sources)):
+        # Прямой курс
+        for i, (rate, source) in enumerate(zip(results[:len(tasks)], sources[:len(tasks)])):
             if isinstance(rate, float) and rate > 0:
-                valid_rates.append((rate, source))
-
-        if valid_rates:
-            if len(valid_rates) >= 2 and "USDT" in valid_rates[0][1] and "USDT" in valid_rates[1][1]:
-                rate_from_usdt = valid_rates[0][0]
-                rate_to_usdt = valid_rates[1][0]
-                rate = rate_from_usdt / rate_to_usdt
-                logger.info(f"Calculated rate via USDT for {from_code} to {to_code}: {rate} ({rate_from_usdt}/{rate_to_usdt})")
-                redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
-                return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\(Binance via USDT\\)"
-            else:
-                rate, source = valid_rates[0]
-                logger.info(f"Direct rate for {from_code} to {to_code}: {rate} from {source}")
-                redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
+                logger.info(f"Using direct rate for {from_code} to {to_code}: {rate} from {source}")
+                redis_client.setex(f"rate:{from_key}_{to_key}", CACHE_TIMEOUT, str(rate))
                 return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\({escape_markdown_v2(source)}\\)"
+
+        # Мост через USDT
+        rate_from_usdt = results[len(tasks)] if isinstance(results[len(tasks)], float) and results[len(tasks)] > 0 else None
+        rate_to_usdt = results[len(tasks) + 1] if isinstance(results[len(tasks) + 1], float) and results[len(tasks) + 1] > 0 else None
+        
+        if from_key == 'usdt' and rate_to_usdt:
+            rate = 1 / rate_to_usdt
+            logger.info(f"Rate via USDT for {from_code} to {to_code}: {rate}")
+            redis_client.setex(f"rate:{from_key}_{to_key}", CACHE_TIMEOUT, str(rate))
+            return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\(Binance via USDT\\)"
+        elif to_key == 'usdt' and rate_from_usdt:
+            rate = rate_from_usdt
+            logger.info(f"Rate via USDT for {from_code} to {to_code}: {rate}")
+            redis_client.setex(f"rate:{from_key}_{to_key}", CACHE_TIMEOUT, str(rate))
+            return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\(Binance via USDT\\)"
+        elif rate_from_usdt and rate_to_usdt:
+            rate = rate_from_usdt / rate_to_usdt
+            logger.info(f"Rate via USDT for {from_code} to {to_code}: {rate} ({rate_from_usdt}/{rate_to_usdt})")
+            redis_client.setex(f"rate:{from_key}_{to_key}", CACHE_TIMEOUT, str(rate))
+            return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\(Binance via USDT\\)"
 
         # Fallback для BTC, ETH и других валют
         if from_key == 'btc' and to_key in ['usdt', 'eur', 'uah']:
@@ -255,7 +254,7 @@ async def get_exchange_rate(from_currency: str, to_currency: str, amount: float 
                 elif to_key == 'uah':
                     rate = rate_btc_usdt * USDT_TO_UAH_FALLBACK
                 logger.info(f"Fallback rate for {from_code} to {to_code}: {rate}")
-                redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
+                redis_client.setex(f"rate:{from_key}_{to_key}", CACHE_TIMEOUT, str(rate))
                 return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\(Binance via USDT\\)"
         elif from_key == 'eth' and to_key in ['usdt', 'eur', 'uah']:
             rate_eth_usdt = await fetch_rate(session, f"{BINANCE_API_URL}?symbol=ETHUSDT", 'price', False, "Binance ETHUSDT")
@@ -268,35 +267,35 @@ async def get_exchange_rate(from_currency: str, to_currency: str, amount: float 
                 elif to_key == 'uah':
                     rate = rate_eth_usdt * USDT_TO_UAH_FALLBACK
                 logger.info(f"Fallback rate for {from_code} to {to_code}: {rate}")
-                redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
+                redis_client.setex(f"rate:{from_key}_{to_key}", CACHE_TIMEOUT, str(rate))
                 return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\(Binance via USDT\\)"
 
         # Fallback для UAH и других валют
         if from_key == 'uah' and to_key == 'usdt':
             rate = UAH_TO_USDT_FALLBACK
             logger.info(f"Fallback rate for {from_code} to {to_code}: {rate}")
-            redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
+            redis_client.setex(f"rate:{from_key}_{to_key}", CACHE_TIMEOUT, str(rate))
             return amount * rate, f"1 {from_key.upper()} \\= {escape_markdown_v2(str(rate))} {to_key.upper()} \\(fallback\\)"
         elif from_key == 'usdt' and to_key == 'uah':
             rate = USDT_TO_UAH_FALLBACK
             logger.info(f"Fallback rate for {from_code} to {to_code}: {rate}")
-            redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
+            redis_client.setex(f"rate:{from_key}_{to_key}", CACHE_TIMEOUT, str(rate))
             return amount * rate, f"1 {from_key.upper()} \\= {escape_markdown_v2(str(rate))} {to_key.upper()} \\(fallback\\)"
         elif from_key == 'uah' and to_key == 'eur':
             rate_usdt = UAH_TO_USDT_FALLBACK
             rate_eur = await fetch_rate(session, f"{BINANCE_API_URL}?symbol=EURUSDT", 'price', True, "Binance EURUSDT") or EUR_TO_USDT_FALLBACK
             rate = rate_usdt / rate_eur
             logger.info(f"Fallback rate for {from_code} to {to_code}: {rate}")
-            redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
+            redis_client.setex(f"rate:{from_key}_{to_key}", CACHE_TIMEOUT, str(rate))
             return amount * rate, f"1 {from_key.upper()} \\= {escape_markdown_v2(str(rate))} {to_key.upper()} \\(Binance via USDT\\)"
         elif from_key == 'eur' and to_key == 'uah':
             rate_usdt = await fetch_rate(session, f"{BINANCE_API_URL}?symbol=EURUSDT", 'price', False, "Binance EURUSDT") or EUR_TO_USDT_FALLBACK
             rate = rate_usdt * USDT_TO_UAH_FALLBACK
             logger.info(f"Fallback rate for {from_code} to {to_code}: {rate}")
-            redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
+            redis_client.setex(f"rate:{from_key}_{to_key}", CACHE_TIMEOUT, str(rate))
             return amount * rate, f"1 {from_key.upper()} \\= {escape_markdown_v2(str(rate))} {to_key.upper()} \\(Binance via USDT\\)"
 
-    logger.warning(f"No rate found for {from_key} to {to_key}")
+    logger.warning(f"No live rate found for {from_key} to {to_key}")
     return None, "Курс недоступен на данный момент\\. Попробуй позже\\!"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -616,6 +615,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from_currency = text[1 if amount != 1.0 else 0]
         to_currency = text[2 if amount != 1.0 else 1]
         save_stats(user_id, f"{from_currency}_to_{to_currency}")
+        
+        # Асинхронный вызов get_exchange_rate
         result, rate_info = await get_exchange_rate(from_currency, to_currency, amount)
         if result is None:
             await update.effective_message.reply_text(
