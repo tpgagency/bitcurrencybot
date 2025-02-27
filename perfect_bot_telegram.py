@@ -59,8 +59,8 @@ CURRENCIES = {
     'trx': {'code': 'TRX'}, 'dot': {'code': 'DOT'}, 'matic': {'code': 'MATIC'}
 }
 
-UAH_TO_USDT_FALLBACK = 0.0239
-USDT_TO_UAH_FALLBACK = 41.84
+UAH_TO_USDT_FALLBACK = 0.0239  # 1 UAH = 0.0239 USDT
+USDT_TO_UAH_FALLBACK = 41.84   # 1 USDT = 41.84 UAH
 
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True, ssl_cert_reqs="none", socket_timeout=10)
 
@@ -126,7 +126,7 @@ def save_history(user_id: str, from_currency: str, to_currency: str, amount: flo
     try:
         history = deque(json.loads(redis_client.get(f"history:{user_id}") or '[]'), maxlen=HISTORY_LIMIT)
         history.append({
-            "time": escape_markdown_v2(time.strftime("%Y-%m-%d %H:%M:%S")),
+            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
             "from": from_currency,
             "to": to_currency,
             "amount": amount,
@@ -176,7 +176,7 @@ def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0)
             logger.warning(f"Error fetching rate from {api_name}: {e}")
             return None
 
-    # Попытка прямого получения курса
+    # Прямые запросы
     sources = [
         (f"{BINANCE_API_URL}?symbol={from_code}{to_code}", 'price', False, "Binance direct"),
         (f"{BINANCE_API_URL}?symbol={to_code}{from_code}", 'price', True, "Binance reverse"),
@@ -191,20 +191,24 @@ def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0)
             formatted_rate = rate if not reverse else 1/rate
             return amount * formatted_rate, f"1 {from_code} \\= {escape_markdown_v2(str(formatted_rate))} {to_code} \\({escape_markdown_v2(source)}\\)"
 
-    # Использование bridge-валют с приоритетом USDT
+    # Bridge через USDT и BTC
     for bridge in ('USDT', 'BTC'):
         if from_key != bridge.lower() and to_key != bridge.lower():
+            # Курс from -> bridge
             rate_from = fetch_rate(f"{BINANCE_API_URL}?symbol={from_code}{bridge}", 'price', False, f"Binance {from_code}{bridge}")
             if not rate_from:
                 rate_from = fetch_rate(f"{BINANCE_API_URL}?symbol={bridge}{from_code}", 'price', True, f"Binance {bridge}{from_code}")
-            rate_to = fetch_rate(f"{BINANCE_API_URL}?symbol={to_code}{bridge}", 'price', True, f"Binance {to_code}{bridge}")
+            
+            # Курс bridge -> to
+            rate_to = fetch_rate(f"{BINANCE_API_URL}?symbol={bridge}{to_code}", 'price', False, f"Binance {bridge}{to_code}")
             if not rate_to:
-                rate_to = fetch_rate(f"{BINANCE_API_URL}?symbol={bridge}{to_code}", 'price', False, f"Binance {bridge}{to_code}")
+                rate_to = fetch_rate(f"{BINANCE_API_URL}?symbol={to_code}{bridge}", 'price', True, f"Binance {to_code}{bridge}")
+
             if rate_from and rate_to:
-                bridge_rate = rate_from * (1 / rate_to)
-                if bridge_rate > 0:
-                    redis_client.setex(cache_key, CACHE_TIMEOUT, bridge_rate)
-                    return amount * bridge_rate, f"1 {from_code} \\= {escape_markdown_v2(str(bridge_rate))} {to_code} \\(Binance via {bridge}\\)"
+                rate = rate_from / rate_to if rate_to != 0 else None
+                if rate and rate > 0:
+                    redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
+                    return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\(Binance via {bridge}\\)"
 
     # Fallback для UAH-USDT и USDT-UAH
     if from_key == 'uah' and to_key == 'usdt':
@@ -216,7 +220,6 @@ def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0)
         redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
         return amount * rate, f"1 {from_key.upper()} \\= {escape_markdown_v2(str(rate))} {to_key.upper()} \\(fallback\\)"
 
-    # Если ничего не удалось, возвращаем ошибку
     return None, "Курс недоступен на данный момент"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -385,7 +388,7 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = "📜 *История пуста*\\."
     else:
         text = "📜 *История запросов*:\n" + "\n".join(
-            f"⏰ {entry['time']}: *{escape_markdown_v2(str(entry['amount']))} {entry['from']}* → *{escape_markdown_v2(str(entry['result']))} {entry['to']}*"
+            f"⏰ {escape_markdown_v2(entry['time'])}: *{escape_markdown_v2(str(entry['amount']))} {entry['from']}* → *{escape_markdown_v2(str(entry['result']))} {entry['to']}*"
             for entry in reversed(history_data)
         )
     if update.callback_query:
@@ -481,7 +484,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             raise ValueError(rate_info)
 
         from_code, to_code = CURRENCIES[from_currency.lower()]['code'], CURRENCIES[to_currency.lower()]['code']
-        precision = 8 if to_code in HIGH_PRECISION_CURRENCIES else 6
+        precision = 8 if to_code in HIGH_PRECISION_CURRENCIES else 2
         await update.effective_message.reply_text(
             f"💰 *{escape_markdown_v2(str(amount))} {from_code}* \\= *{escape_markdown_v2(str(round(result, precision)))} {to_code}*\n"
             f"📈 {rate_info}\n🔄 Осталось: *{remaining}*{AD_MESSAGE}",
@@ -539,7 +542,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result, rate_info = get_exchange_rate(from_currency, to_currency)
         if result:
             from_code, to_code = CURRENCIES[from_currency]['code'], CURRENCIES[to_currency]['code']
-            precision = 8 if to_code in HIGH_PRECISION_CURRENCIES else 6
+            precision = 8 if to_code in HIGH_PRECISION_CURRENCIES else 2
             await query.edit_message_text(
                 f"💰 *1\\.0 {from_code}* \\= *{escape_markdown_v2(str(round(result, precision)))} {to_code}*\n"
                 f"📈 {rate_info}\n🔄 Осталось: *{remaining}*{AD_MESSAGE}",
