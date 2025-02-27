@@ -179,7 +179,7 @@ async def fetch_kucoin_rate(session: aiohttp.ClientSession, from_code: str, to_c
 
 async def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0) -> Tuple[Optional[float], str]:
     from_key, to_key = from_currency.lower(), to_currency.lower()
-    if from_key not in CURENCIES or to_key not in CURENCIES:
+    if from_key not in CURRENCIES or to_key not in CURRENCIES:
         return None, "Неподдерживаемая валюта"
     
     cache_key = f"rate:{from_key}_{to_key}"
@@ -191,7 +191,7 @@ async def get_exchange_rate(from_currency: str, to_currency: str, amount: float 
         except ValueError as e:
             logger.warning(f"Invalid cached rate for {from_key}_{to_key}: {e}")
 
-    from_code, to_code = CURENCIES[from_key]['code'], CURENCIES[to_key]['code']
+    from_code, to_code = CURRENCIES[from_key]['code'], CURRENCIES[to_key]['code']
     if from_key == to_key:
         redis_client.setex(cache_key, CACHE_TIMEOUT, 1.0)
         return amount, f"1 {from_key.upper()} \\= 1 {to_key.upper()}"
@@ -288,7 +288,7 @@ async def currencies(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     try:
         await update.effective_message.reply_text(
-            f"💱 *Поддерживаемые валюты*:\n{', '.join(sorted(CURENCIES.keys()))}",
+            f"💱 *Поддерживаемые валюты*:\n{', '.join(sorted(CURRENCIES.keys()))}",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="start")]]),
             parse_mode=ParseMode.MARKDOWN_V2
         )
@@ -325,7 +325,7 @@ async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     from_currency, to_currency, target_rate = args[0].lower(), args[1].lower(), float(args[2])
-    if from_currency not in CURENCIES or to_currency not in CURENCIES:
+    if from_currency not in CURRENCIES or to_currency not in CURRENCIES:
         try:
             await update.effective_message.reply_text("❌ Ошибка: валюта не поддерживается", parse_mode=ParseMode.MARKDOWN_V2)
         except TelegramError as e:
@@ -461,10 +461,16 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not history_data:
             text = "📜 *История пуста*\\."
         else:
-            text = "📜 *История запросов*:\n" + "\n".join(
-                f"⏰ {escape_markdown_v2(entry['time'])}: *{escape_markdown_v2(str(entry['amount']))} {entry['from']}* → *{escape_markdown_v2(str(entry['result']))} {entry['to']}*"
-                for entry in reversed(history_data)
-            )
+            history_lines = []
+            for entry in reversed(history_data):
+                time_str = escape_markdown_v2(entry['time'])  # Экранируем дату полностью
+                amount_str = escape_markdown_v2(str(entry['amount']))
+                result_str = escape_markdown_v2(str(entry['result']))
+                from_curr = escape_markdown_v2(entry['from'])
+                to_curr = escape_markdown_v2(entry['to'])
+                line = f"⏰ {time_str}: *{amount_str} {from_curr}* → *{result_str} {to_curr}*"
+                history_lines.append(line)
+            text = "📜 *История запросов*:\n" + "\n".join(history_lines)
         if update.callback_query:
             await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(back_button), parse_mode=ParseMode.MARKDOWN_V2)
         else:
@@ -532,7 +538,7 @@ async def check_alerts_job(context: ContextTypes.DEFAULT_TYPE):
             for alert in alerts:
                 result, rate_info = await get_exchange_rate(alert["from"], alert["to"])
                 if result and float(rate_info.split()[2]) <= alert["target"]:
-                    from_code, to_code = CURENCIES[alert["from"]]['code'], CURENCIES[alert["to"]]['code']
+                    from_code, to_code = CURRENCIES[alert["from"]]['code'], CURRENCIES[alert["to"]]['code']
                     await context.bot.send_message(
                         user_id,
                         f"🔔 *Уведомление*\! {from_code} → {to_code}: {escape_markdown_v2(str(float(rate_info.split()[2])))} \\(цель: {escape_markdown_v2(str(alert['target']))}\\)",
@@ -571,7 +577,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if result is None:
             raise ValueError(rate_info)
 
-        from_code, to_code = CURENCIES[from_currency.lower()]['code'], CURENCIES[to_currency.lower()]['code']
+        from_code, to_code = CURRENCIES[from_currency.lower()]['code'], CURRENCIES[to_currency.lower()]['code']
         precision = 8 if to_code in HIGH_PRECISION_CURRENCIES else 2
         await update.effective_message.reply_text(
             f"💰 *{escape_markdown_v2(str(amount))} {from_code}* \\= *{escape_markdown_v2(str(round(result, precision)))} {to_code}*\n"
@@ -644,7 +650,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             _, from_currency, to_currency = action.split(":")
             result, rate_info = await get_exchange_rate(from_currency, to_currency)
             if result:
-                from_code, to_code = CURENCIES[from_currency]['code'], CURENCIES[to_currency]['code']
+                from_code, to_code = CURRENCIES[from_currency]['code'], CURRENCIES[to_currency]['code']
                 precision = 8 if to_code in HIGH_PRECISION_CURRENCIES else 2
                 await query.edit_message_text(
                     f"💰 *1\\.0 {from_code}* \\= *{escape_markdown_v2(str(round(result, precision)))} {to_code}*\n"
