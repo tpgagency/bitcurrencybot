@@ -2,8 +2,8 @@ import os
 import json
 import time
 import logging
-import requests
 import asyncio
+import aiohttp
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -40,7 +40,7 @@ if not TELEGRAM_TOKEN or not CRYPTO_PAY_TOKEN:
 AD_MESSAGE = "\n\n📢 Подпишись на @tpgbit для новостей о крипте\\!"
 FREE_REQUEST_LIMIT = 5
 SUBSCRIPTION_PRICE = 5
-CACHE_TIMEOUT = 300
+CACHE_TIMEOUT = 60  # Уменьшено для более частого обновления курсов
 ADMIN_IDS = {"1058875848", "6403305626"}
 HISTORY_LIMIT = 20
 MAX_RETRIES = 3
@@ -48,6 +48,7 @@ HIGH_PRECISION_CURRENCIES = {'BTC', 'ETH', 'XRP', 'DOGE', 'ADA', 'SOL', 'LTC', '
 
 BINANCE_API_URL = "https://api.binance.com/api/v3/ticker/price"
 WHITEBIT_API_URL = "https://whitebit.com/api/v1/public/ticker"
+KUCOIN_API_URL = "https://api.kucoin.com/api/v1/market/allTickers"
 
 CURRENCIES = {
     'usd': {'code': 'USDT'}, 'uah': {'code': 'UAH'}, 'eur': {'code': 'EUR'},
@@ -151,7 +152,30 @@ def check_limit(user_id: str) -> Tuple[bool, str]:
         logger.error(f"Error checking limit for {user_id}: {e}")
         return False, "0"
 
-def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0) -> Tuple[Optional[float], str]:
+async def fetch_rate(session: aiohttp.ClientSession, url: str, key: str, reverse: bool = False, api_name: str = "API") -> Optional[float]:
+    try:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as response:
+            data = await response.json()
+            rate = float(data[key if not reverse else 'price'])
+            return 1 / rate if reverse and rate > 0 else rate if rate > 0 else None
+    except (aiohttp.ClientError, ValueError, KeyError, TypeError) as e:
+        logger.warning(f"Error fetching rate from {api_name}: {e}")
+        return None
+
+async def fetch_kucoin_rate(session: aiohttp.ClientSession, from_code: str, to_code: str) -> Optional[float]:
+    try:
+        async with session.get(KUCOIN_API_URL, timeout=aiohttp.ClientTimeout(total=5)) as response:
+            data = await response.json()
+            ticker = f"{from_code}-{to_code}"
+            for item in data['data']['ticker']:
+                if item['symbol'] == ticker:
+                    return float(item['last'])
+            return None
+    except (aiohttp.ClientError, ValueError, KeyError, TypeError) as e:
+        logger.warning(f"Error fetching rate from KuCoin: {e}")
+        return None
+
+async def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0) -> Tuple[Optional[float], str]:
     from_key, to_key = from_currency.lower(), to_currency.lower()
     if from_key not in CURRENCIES or to_key not in CURRENCIES:
         return None, "Неподдерживаемая валюта"
@@ -167,69 +191,67 @@ def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0)
         redis_client.setex(cache_key, CACHE_TIMEOUT, 1.0)
         return amount, f"1 {from_key.upper()} \\= 1 {to_key.upper()}"
 
-    def fetch_rate(url: str, key: str, reverse: bool = False, api_name: str = "API") -> Optional[float]:
-        try:
-            response = requests.get(url, timeout=5).json()
-            rate = float(response[key if not reverse else 'price'])
-            return 1 / rate if reverse and rate > 0 else rate if rate > 0 else None
-        except (requests.RequestException, ValueError, KeyError, TypeError) as e:
-            logger.warning(f"Error fetching rate from {api_name}: {e}")
-            return None
+    async with aiohttp.ClientSession() as session:
+        # Прямые запросы
+        sources = [
+            (f"{BINANCE_API_URL}?symbol={from_code}{to_code}", 'price', False, "Binance direct"),
+            (f"{BINANCE_API_URL}?symbol={to_code}{from_code}", 'price', True, "Binance reverse"),
+            (WHITEBIT_API_URL, f"{from_code}_{to_code}", False, "WhiteBIT direct"),
+            (WHITEBIT_API_URL, f"{to_code}_{from_code}", True, "WhiteBIT reverse"),
+        ]
 
-    # Прямые запросы
-    sources = [
-        (f"{BINANCE_API_URL}?symbol={from_code}{to_code}", 'price', False, "Binance direct"),
-        (f"{BINANCE_API_URL}?symbol={to_code}{from_code}", 'price', True, "Binance reverse"),
-        (WHITEBIT_API_URL, f"{from_code}_{to_code}", False, "WhiteBIT direct"),
-        (WHITEBIT_API_URL, f"{to_code}_{from_code}", True, "WhiteBIT reverse"),
-    ]
+        for url, pair, reverse, source in sources:
+            rate = await fetch_rate(session, url, 'price' if 'binance' in url else pair, reverse, source)
+            if rate:
+                redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
+                formatted_rate = rate if not reverse else 1/rate
+                return amount * formatted_rate, f"1 {from_code} \\= {escape_markdown_v2(str(formatted_rate))} {to_code} \\({escape_markdown_v2(source)}\\)"
 
-    for url, pair, reverse, source in sources:
-        rate = fetch_rate(url, 'price' if 'binance' in url else pair, reverse, source)
+        # KuCoin
+        rate = await fetch_kucoin_rate(session, from_code, to_code)
         if rate:
-            redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
-            formatted_rate = rate if not reverse else 1/rate
-            return amount * formatted_rate, f"1 {from_code} \\= {escape_markdown_v2(str(formatted_rate))} {to_code} \\({escape_markdown_v2(source)}\\)"
+            redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
+            return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\(KuCoin\\)"
 
-    # Bridge через USDT и BTC
-    for bridge in ('USDT', 'BTC'):
-        if from_key != bridge.lower() and to_key != bridge.lower():
-            rate_from = fetch_rate(f"{BINANCE_API_URL}?symbol={from_code}{bridge}", 'price', False, f"Binance {from_code}{bridge}")
-            if not rate_from:
-                rate_from = fetch_rate(f"{BINANCE_API_URL}?symbol={bridge}{from_code}", 'price', True, f"Binance {bridge}{from_code}")
-            
-            rate_to = fetch_rate(f"{BINANCE_API_URL}?symbol={bridge}{to_code}", 'price', False, f"Binance {bridge}{to_code}")
-            if not rate_to:
-                rate_to = fetch_rate(f"{BINANCE_API_URL}?symbol={to_code}{bridge}", 'price', True, f"Binance {to_code}{bridge}")
+        # Bridge через USDT и BTC
+        for bridge in ('USDT', 'BTC'):
+            if from_key != bridge.lower() and to_key != bridge.lower():
+                rate_from = await fetch_rate(session, f"{BINANCE_API_URL}?symbol={from_code}{bridge}", 'price', False, f"Binance {from_code}{bridge}")
+                if not rate_from:
+                    rate_from = await fetch_rate(session, f"{BINANCE_API_URL}?symbol={bridge}{from_code}", 'price', True, f"Binance {bridge}{from_code}")
+                
+                rate_to = await fetch_rate(session, f"{BINANCE_API_URL}?symbol={bridge}{to_code}", 'price', False, f"Binance {bridge}{to_code}")
+                if not rate_to:
+                    rate_to = await fetch_rate(session, f"{BINANCE_API_URL}?symbol={to_code}{bridge}", 'price', True, f"Binance {to_code}{bridge}")
 
-            if rate_from and rate_to:
-                rate = rate_from / rate_to if rate_to != 0 else None
-                if rate and rate > 0:
-                    redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
-                    return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\(Binance via {bridge}\\)"
+                if rate_from and rate_to:
+                    rate = rate_from / rate_to if rate_to != 0 else None
+                    if rate and rate > 0:
+                        redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
+                        return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\(Binance via {bridge}\\)"
 
-    # Fallback для UAH-USDT и USDT-UAH
-    if from_key == 'uah' and to_key == 'usdt':
-        rate = UAH_TO_USDT_FALLBACK
-        redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
-        return amount * rate, f"1 {from_key.upper()} \\= {escape_markdown_v2(str(rate))} {to_key.upper()} \\(fallback\\)"
-    elif from_key == 'usdt' and to_key == 'uah':
-        rate = USDT_TO_UAH_FALLBACK
-        redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
-        return amount * rate, f"1 {from_key.upper()} \\= {escape_markdown_v2(str(rate))} {to_key.upper()} \\(fallback\\)"
-    elif from_key == 'uah' and to_key == 'eur':
-        rate_usdt = UAH_TO_USDT_FALLBACK
-        rate_eur = fetch_rate(f"{BINANCE_API_URL}?symbol=EURUSDT", 'price', True, "Binance EURUSDT")
-        if rate_eur:
-            rate = rate_usdt / rate_eur
-            redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
-            return amount * rate, f"1 {from_key.upper()} \\= {escape_markdown_v2(str(rate))} {to_key.upper()} \\(Binance via USDT\\)"
-    elif from_key == 'eur' and to_key == 'uah':
-        rate_usdt = fetch_rate(f"{BINANCE_API_URL}?symbol=EURUSDT", 'price', False, "Binance EURUSDT")
-        if rate_usdt:
-            rate = rate_usdt * USDT_TO_UAH_FALLBACK
-            redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
-            return amount * rate, f"1 {from_key.upper()} \\= {escape_markdown_v2(str(rate))} {to_key.upper()} \\(Binance via USDT\\)"
+        # Fallback для UAH-USDT и USDT-UAH
+        if from_key == 'uah' and to_key == 'usdt':
+            rate = UAH_TO_USDT_FALLBACK
+            redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
+            return amount * rate, f"1 {from_key.upper()} \\= {escape_markdown_v2(str(rate))} {to_key.upper()} \\(fallback\\)"
+        elif from_key == 'usdt' and to_key == 'uah':
+            rate = USDT_TO_UAH_FALLBACK
+            redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
+            return amount * rate, f"1 {from_key.upper()} \\= {escape_markdown_v2(str(rate))} {to_key.upper()} \\(fallback\\)"
+        elif from_key == 'uah' and to_key == 'eur':
+            rate_usdt = UAH_TO_USDT_FALLBACK
+            rate_eur = await fetch_rate(session, f"{BINANCE_API_URL}?symbol=EURUSDT", 'price', True, "Binance EURUSDT")
+            if rate_eur:
+                rate = rate_usdt / rate_eur
+                redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
+                return amount * rate, f"1 {from_key.upper()} \\= {escape_markdown_v2(str(rate))} {to_key.upper()} \\(Binance via USDT\\)"
+        elif from_key == 'eur' and to_key == 'uah':
+            rate_usdt = await fetch_rate(session, f"{BINANCE_API_URL}?symbol=EURUSDT", 'price', False, "Binance EURUSDT")
+            if rate_usdt:
+                rate = rate_usdt * USDT_TO_UAH_FALLBACK
+                redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
+                return amount * rate, f"1 {from_key.upper()} \\= {escape_markdown_v2(str(rate))} {to_key.upper()} \\(Binance via USDT\\)"
 
     return None, "Курс недоступен на данный момент"
 
@@ -339,34 +361,36 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        response = requests.post(
-            "https://pay.crypt.bot/api/createInvoice",
-            headers={'Crypto-Pay-API-Token': CRYPTO_PAY_TOKEN},
-            json={"asset": "USDT", "amount": str(SUBSCRIPTION_PRICE), "description": f"Подписка для {user_id}"},
-            timeout=15
-        ).json()
-        if response.get("ok"):
-            invoice_id = response["result"]["invoice_id"]
-            pay_url = response["result"]["pay_url"]
-            context.user_data[user_id] = {"invoice_id": invoice_id}
-            text = f"💎 Оплати *{SUBSCRIPTION_PRICE} USDT* для безлимита:"
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton(f"💳 Оплатить {SUBSCRIPTION_PRICE} USDT", url=pay_url)],
-                [InlineKeyboardButton("🔙 Назад", callback_data="start")]
-            ])
-            if update.callback_query:
-                await update.callback_query.edit_message_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN_V2)
-            else:
-                await update.effective_message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN_V2)
-        else:
-            error_msg = response.get('error', 'Неизвестно')
-            logger.error(f"Payment error for {user_id}: {error_msg}")
-            text = f"❌ Ошибка платежа: {escape_markdown_v2(error_msg)}"
-            if update.callback_query:
-                await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN_V2)
-            else:
-                await update.effective_message.reply_text(text, parse_mode=ParseMode.MARKDOWN_V2)
-    except requests.RequestException as e:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://pay.crypt.bot/api/createInvoice",
+                headers={'Crypto-Pay-API-Token': CRYPTO_PAY_TOKEN},
+                json={"asset": "USDT", "amount": str(SUBSCRIPTION_PRICE), "description": f"Подписка для {user_id}"},
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as response:
+                result = await response.json()
+                if result.get("ok"):
+                    invoice_id = result["result"]["invoice_id"]
+                    pay_url = result["result"]["pay_url"]
+                    context.user_data[user_id] = {"invoice_id": invoice_id}
+                    text = f"💎 Оплати *{SUBSCRIPTION_PRICE} USDT* для безлимита:"
+                    keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton(f"💳 Оплатить {SUBSCRIPTION_PRICE} USDT", url=pay_url)],
+                        [InlineKeyboardButton("🔙 Назад", callback_data="start")]
+                    ])
+                    if update.callback_query:
+                        await update.callback_query.edit_message_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN_V2)
+                    else:
+                        await update.effective_message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN_V2)
+                else:
+                    error_msg = result.get('error', 'Неизвестно')
+                    logger.error(f"Payment error for {user_id}: {error_msg}")
+                    text = f"❌ Ошибка платежа: {escape_markdown_v2(error_msg)}"
+                    if update.callback_query:
+                        await update.callback_query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN_V2)
+                    else:
+                        await update.effective_message.reply_text(text, parse_mode=ParseMode.MARKDOWN_V2)
+    except Exception as e:
         logger.error(f"Subscribe error for {user_id}: {e}")
         text = "❌ Ошибка связи с платежной системой"
         if update.callback_query:
@@ -426,22 +450,24 @@ async def check_payment_job(context: ContextTypes.DEFAULT_TYPE):
         if "invoice_id" not in data:
             continue
         try:
-            response = requests.get(
-                f"https://pay.crypt.bot/api/getInvoices?invoice_ids={data['invoice_id']}",
-                headers={'Crypto-Pay-API-Token': CRYPTO_PAY_TOKEN},
-                timeout=15
-            ).json()
-            if response.get("ok") and response["result"]["items"] and response["result"]["items"][0]["status"] == "paid":
-                stats = json.loads(redis_client.get('stats') or '{}')
-                stats.setdefault("subscriptions", {})[user_id] = True
-                stats["revenue"] = stats.get("revenue", 0.0) + SUBSCRIPTION_PRICE
-                redis_client.setex('stats', 30 * 24 * 60 * 60, json.dumps(stats))
-                del context.user_data[user_id]
-                await context.bot.send_message(
-                    user_id,
-                    "💎 Оплата прошла\\! Безлимит активирован\\.",
-                    parse_mode=ParseMode.MARKDOWN_V2
-                )
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"https://pay.crypt.bot/api/getInvoices?invoice_ids={data['invoice_id']}",
+                    headers={'Crypto-Pay-API-Token': CRYPTO_PAY_TOKEN},
+                    timeout=aiohttp.ClientTimeout(total=15)
+                ) as response:
+                    result = await response.json()
+                    if result.get("ok") and result["result"]["items"] and result["result"]["items"][0]["status"] == "paid":
+                        stats = json.loads(redis_client.get('stats') or '{}')
+                        stats.setdefault("subscriptions", {})[user_id] = True
+                        stats["revenue"] = stats.get("revenue", 0.0) + SUBSCRIPTION_PRICE
+                        redis_client.setex('stats', 30 * 24 * 60 * 60, json.dumps(stats))
+                        del context.user_data[user_id]
+                        await context.bot.send_message(
+                            user_id,
+                            "💎 Оплата прошла\\! Безлимит активирован\\.",
+                            parse_mode=ParseMode.MARKDOWN_V2
+                        )
         except Exception as e:
             logger.error(f"Payment check error for {user_id}: {e}")
 
@@ -455,7 +481,7 @@ async def check_alerts_job(context: ContextTypes.DEFAULT_TYPE):
             continue
         updated_alerts = []
         for alert in alerts:
-            result, rate_info = get_exchange_rate(alert["from"], alert["to"])
+            result, rate_info = await get_exchange_rate(alert["from"], alert["to"])
             if result and float(rate_info.split()[2]) <= alert["target"]:
                 from_code, to_code = CURRENCIES[alert["from"]]['code'], CURRENCIES[alert["to"]]['code']
                 await context.bot.send_message(
@@ -473,7 +499,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     stats = json.loads(redis_client.get('stats') or '{}')
     is_subscribed = user_id in ADMIN_IDS or stats.get("subscriptions", {}).get(user_id)
-    delay = 1 if is_subscribed else 5
+    delay = 0 if is_subscribed else 5  # Без задержки для подписчиков и админов
 
     if 'last_request' in context.user_data and time.time() - context.user_data['last_request'] < delay:
         await update.effective_message.reply_text(f"⏳ Подожди {delay} секунд{'у' if delay == 1 else ''}\!", parse_mode=ParseMode.MARKDOWN_V2)
@@ -490,7 +516,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         amount = float(text[0]) if text[0].replace('.', '', 1).isdigit() else 1.0
         from_currency, to_currency = text[1 if amount != 1.0 else 0], text[2 if amount != 1.0 else 1]
         save_stats(user_id, f"{from_currency}_to_{to_currency}")
-        result, rate_info = get_exchange_rate(from_currency, to_currency, amount)
+        result, rate_info = await get_exchange_rate(from_currency, to_currency, amount)
         if result is None:
             raise ValueError(rate_info)
 
@@ -522,7 +548,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(query.from_user.id)
     stats = json.loads(redis_client.get('stats') or '{}')
     is_subscribed = user_id in ADMIN_IDS or stats.get("subscriptions", {}).get(user_id)
-    delay = 1 if is_subscribed else 5
+    delay = 0 if is_subscribed else 5  # Без задержки для подписчиков и админов
 
     if 'last_request' in context.user_data and time.time() - context.user_data['last_request'] < delay:
         await query.edit_message_text(f"⏳ Подожди {delay} секунд{'у' if delay == 1 else ''}\!", parse_mode=ParseMode.MARKDOWN_V2)
@@ -550,7 +576,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     elif action.startswith("convert:"):
         _, from_currency, to_currency = action.split(":")
-        result, rate_info = get_exchange_rate(from_currency, to_currency)
+        result, rate_info = await get_exchange_rate(from_currency, to_currency)
         if result:
             from_code, to_code = CURRENCIES[from_currency]['code'], CURRENCIES[to_currency]['code']
             precision = 8 if to_code in HIGH_PRECISION_CURRENCIES else 2
