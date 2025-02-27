@@ -81,7 +81,7 @@ if not init_redis_connection():
     exit(1)
 
 def escape_markdown_v2(text: str) -> str:
-    reserved_chars = r'_*\[\]()~`>#+-=|{}!'
+    reserved_chars = r'_*[]()~`>#+-=|{}!.'
     for char in reserved_chars:
         text = text.replace(char, f'\\{char}')
     return text
@@ -161,7 +161,8 @@ async def fetch_rate(session: aiohttp.ClientSession, url: str, key: str, reverse
             logger.debug(f"API response from {api_name}: {data}")
             rate = float(data.get(key if not reverse else 'price', 0))
             if rate <= 0:
-                raise ValueError("Rate is zero or negative")
+                logger.warning(f"{api_name} returned invalid rate: {rate}")
+                return None
             return 1 / rate if reverse else rate
     except (aiohttp.ClientError, ValueError, KeyError, TypeError) as e:
         logger.warning(f"Error fetching rate from {api_name}: {str(e)}")
@@ -233,8 +234,8 @@ async def get_exchange_rate(from_currency: str, to_currency: str, amount: float 
                 rate_to_usdt = await fetch_rate(session, f"{BINANCE_API_URL}?symbol=USDT{to_code}", 'price', True, f"Binance USDT{to_code}")
 
             if rate_from_usdt and rate_to_usdt:
-                rate = rate_from_usdt / rate_to_usdt if rate_to_usdt != 0 else None
-                if rate and rate > 0:
+                rate = rate_from_usdt / rate_to_usdt if not rate_to_usdt else None
+                if rate:
                     redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
                     return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\(Binance via USDT\\)"
 
@@ -251,7 +252,7 @@ async def get_exchange_rate(from_currency: str, to_currency: str, amount: float 
             rate_usdt = UAH_TO_USDT_FALLBACK
             rate_eur = await fetch_rate(session, f"{BINANCE_API_URL}?symbol=EURUSDT", 'price', True, "Binance EURUSDT")
             if rate_eur:
-                rate = rate_usdt / rate_eur
+                rate = rate_usdt * rate_eur  # Исправлено: умножение для правильного направления
                 redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
                 return amount * rate, f"1 {from_key.upper()} \\= {escape_markdown_v2(str(rate))} {to_key.upper()} \\(Binance via USDT\\)"
         elif from_key == 'eur' and to_key == 'uah':
@@ -470,7 +471,7 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             history_lines = []
             for entry in reversed(history_data):
-                time_str = entry['time'].replace('-', '\\-')  # Явно экранируем '-'
+                time_str = entry['time'].replace('-', '\\-')  # Экранируем '-'
                 amount_str = escape_markdown_v2(str(entry['amount']))
                 result_str = escape_markdown_v2(str(entry['result']))
                 from_curr = escape_markdown_v2(entry['from'])
