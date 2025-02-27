@@ -185,7 +185,7 @@ async def get_exchange_rate(from_currency: str, to_currency: str, amount: float 
         rate = float(cached)
         return amount * rate, f"1 {from_key.upper()} \\= {escape_markdown_v2(str(rate))} {to_key.upper()} \\(cached\\)"
 
-    from_code, to_code = CURRENCIES[from_key]['code'], CURRENCIES[to_key]['code']
+    from_code, to_code = CURRENCIES[from_key]['code'], CURENCIES[to_key]['code']
     if from_key == to_key:
         redis_client.setex(cache_key, CACHE_TIMEOUT, 1.0)
         return amount, f"1 {from_key.upper()} \\= 1 {to_key.upper()}"
@@ -630,8 +630,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN_V2
         )
 
-async def set_bot_commands(app):
-    await app.bot.set_my_commands([
+async def set_bot_commands(application: Application):
+    await application.bot.set_my_commands([
         ("start", "Главное меню"),
         ("currencies", "Список валют"),
         ("alert", "Уведомления"),
@@ -644,7 +644,7 @@ async def set_bot_commands(app):
 
 async def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
-    
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("currencies", currencies))
     app.add_handler(CommandHandler("alert", alert))
@@ -669,13 +669,12 @@ async def main():
         redis_client.setex('stats', 30 * 24 * 60 * 60, json.dumps({"users": {}, "total_requests": 0, "request_types": {}, "subscriptions": {}, "revenue": 0.0}))
 
     logger.info("Bot starting...")
-    await app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, timeout=30)
-    await app.shutdown()
+    try:
+        await app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, timeout=30)
+    finally:
+        await app.stop()
+        await app.shutdown()
+        logger.info("Bot stopped cleanly")
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
-    except Exception as e:
-        logger.critical(f"Unexpected error: {e}")
+    asyncio.run(main())
