@@ -277,7 +277,7 @@ async def currencies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await enforce_subscription(update, context):
         return
     await update.effective_message.reply_text(
-        f"💱 *Поддерживаемые валюты*:\n{', '.join(sorted(CURRENCIES.keys()))}",
+        f"💱 *Поддерживаемые валюты*:\n{', '.join(sorted(CURENCIES.keys()))}",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data="start")]]),
         parse_mode=ParseMode.MARKDOWN_V2
     )
@@ -309,7 +309,7 @@ async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     from_currency, to_currency, target_rate = args[0].lower(), args[1].lower(), float(args[2])
-    if from_currency not in CURRENCIES or to_currency not in CURRENCIES:
+    if from_currency not in CURENCIES or to_currency not in CURENCIES:
         await update.effective_message.reply_text("❌ Ошибка: валюта не поддерживается", parse_mode=ParseMode.MARKDOWN_V2)
         return
 
@@ -478,7 +478,7 @@ async def check_alerts_job(context: ContextTypes.DEFAULT_TYPE):
         for alert in alerts:
             result, rate_info = await get_exchange_rate(alert["from"], alert["to"])
             if result and float(rate_info.split()[2]) <= alert["target"]:
-                from_code, to_code = CURRENCIES[alert["from"]]['code'], CURRENCIES[alert["to"]]['code']
+                from_code, to_code = CURENCIES[alert["from"]]['code'], CURENCIES[alert["to"]]['code']
                 await context.bot.send_message(
                     user_id,
                     f"🔔 *Уведомление*\! {from_code} → {to_code}: {escape_markdown_v2(str(float(rate_info.split()[2])))} \\(цель: {escape_markdown_v2(str(alert['target']))}\\)",
@@ -515,7 +515,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if result is None:
             raise ValueError(rate_info)
 
-        from_code, to_code = CURRENCIES[from_currency.lower()]['code'], CURRENCIES[to_currency.lower()]['code']
+        from_code, to_code = CURENCIES[from_currency.lower()]['code'], CURENCIES[to_currency.lower()]['code']
         precision = 8 if to_code in HIGH_PRECISION_CURRENCIES else 2
         await update.effective_message.reply_text(
             f"💰 *{escape_markdown_v2(str(amount))} {from_code}* \\= *{escape_markdown_v2(str(round(result, precision)))} {to_code}*\n"
@@ -629,6 +629,18 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]),
             parse_mode=ParseMode.MARKDOWN_V2
         )
+
+async def set_bot_commands(app):
+    await app.bot.set_my_commands([
+        ("start", "Главное меню"),
+        ("currencies", "Список валют"),
+        ("alert", "Уведомления"),
+        ("stats", "Статистика"),
+        ("subscribe", "Подписка"),
+        ("referrals", "Рефералы"),
+        ("history", "История запросов")
+    ])
+    logger.info("Bot commands set")
 
 async def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
