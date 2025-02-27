@@ -62,7 +62,7 @@ CURRENCIES = {
 
 UAH_TO_USDT_FALLBACK = 0.0239  # 1 UAH = 0.0239 USDT
 USDT_TO_UAH_FALLBACK = 41.84   # 1 USDT = 41.84 UAH
-EUR_TO_USDT_FALLBACK = 1.08    # 1 EUR = 1.08 USDT (примерное значение)
+EUR_TO_USDT_FALLBACK = 1.08    # 1 EUR = 1.08 USDT
 
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True, ssl_cert_reqs="none", socket_timeout=10)
 
@@ -222,8 +222,7 @@ async def get_exchange_rate(from_currency: str, to_currency: str, amount: float 
                 valid_rates.append((rate, source))
 
         if valid_rates:
-            # Выбираем первый валидный курс (или можем взять среднее, если нужно)
-            rate, source = valid_rates[0]
+            rate, source = valid_rates[0]  # Берем первый валидный курс
             redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
             return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\({escape_markdown_v2(source)}\\)"
 
@@ -231,21 +230,45 @@ async def get_exchange_rate(from_currency: str, to_currency: str, amount: float 
         if from_key != 'usdt' and to_key != 'usdt':
             tasks_usdt = [
                 fetch_rate(session, f"{BINANCE_API_URL}?symbol={from_code}USDT", 'price', False, f"Binance {from_code}USDT"),
-                fetch_rate(session, f"{BINANCE_API_URL}?symbol=USDT{from_code}", 'price', True, f"Binance USDT{from_code}"),
-                fetch_rate(session, f"{BINANCE_API_URL}?symbol={to_code}USDT", 'price', False, f"Binance {to_code}USDT"),
                 fetch_rate(session, f"{BINANCE_API_URL}?symbol=USDT{to_code}", 'price', True, f"Binance USDT{to_code}")
             ]
             usdt_results = await asyncio.gather(*tasks_usdt, return_exceptions=True)
 
-            rate_from_usdt = usdt_results[0] if isinstance(usdt_results[0], float) else usdt_results[1]
-            rate_to_usdt = usdt_results[2] if isinstance(usdt_results[2], float) else usdt_results[3]
+            rate_from_usdt = usdt_results[0] if isinstance(usdt_results[0], float) and usdt_results[0] > 0 else None
+            rate_to_usdt = usdt_results[1] if isinstance(usdt_results[1], float) and usdt_results[1] > 0 else None
 
-            if rate_from_usdt and rate_to_usdt and rate_to_usdt != 0:
+            if rate_from_usdt and rate_to_usdt:
                 rate = rate_from_usdt / rate_to_usdt
                 redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
                 return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\(Binance via USDT\\)"
 
-        # Fallback для UAH и других валют
+        # Fallback для BTC, ETH и других валют
+        if from_key == 'btc' and to_key in ['usdt', 'eur', 'uah']:
+            rate_btc_usdt = await fetch_rate(session, f"{BINANCE_API_URL}?symbol=BTCUSDT", 'price', False, "Binance BTCUSDT")
+            if rate_btc_usdt:
+                if to_key == 'usdt':
+                    rate = rate_btc_usdt
+                elif to_key == 'eur':
+                    rate_eur_usdt = await fetch_rate(session, f"{BINANCE_API_URL}?symbol=EURUSDT", 'price', False, "Binance EURUSDT") or EUR_TO_USDT_FALLBACK
+                    rate = rate_btc_usdt / rate_eur_usdt
+                elif to_key == 'uah':
+                    rate = rate_btc_usdt * USDT_TO_UAH_FALLBACK
+                redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
+                return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\(Binance via USDT\\)"
+        elif from_key == 'eth' and to_key in ['usdt', 'eur', 'uah']:
+            rate_eth_usdt = await fetch_rate(session, f"{BINANCE_API_URL}?symbol=ETHUSDT", 'price', False, "Binance ETHUSDT")
+            if rate_eth_usdt:
+                if to_key == 'usdt':
+                    rate = rate_eth_usdt
+                elif to_key == 'eur':
+                    rate_eur_usdt = await fetch_rate(session, f"{BINANCE_API_URL}?symbol=EURUSDT", 'price', False, "Binance EURUSDT") or EUR_TO_USDT_FALLBACK
+                    rate = rate_eth_usdt / rate_eur_usdt
+                elif to_key == 'uah':
+                    rate = rate_eth_usdt * USDT_TO_UAH_FALLBACK
+                redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
+                return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\(Binance via USDT\\)"
+
+        # Fallback для UAH
         if from_key == 'uah' and to_key == 'usdt':
             rate = UAH_TO_USDT_FALLBACK
             redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
@@ -265,18 +288,6 @@ async def get_exchange_rate(from_currency: str, to_currency: str, amount: float 
             rate = rate_usdt * USDT_TO_UAH_FALLBACK
             redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
             return amount * rate, f"1 {from_key.upper()} \\= {escape_markdown_v2(str(rate))} {to_key.upper()} \\(Binance via USDT\\)"
-        elif from_key == 'btc' and to_key in ['uah', 'eur', 'usdt']:
-            rate_btc_usdt = await fetch_rate(session, f"{BINANCE_API_URL}?symbol=BTCUSDT", 'price', False, "Binance BTCUSDT")
-            if rate_btc_usdt:
-                if to_key == 'usdt':
-                    rate = rate_btc_usdt
-                elif to_key == 'uah':
-                    rate = rate_btc_usdt * USDT_TO_UAH_FALLBACK
-                elif to_key == 'eur':
-                    rate_eur_usdt = await fetch_rate(session, f"{BINANCE_API_URL}?symbol=EURUSDT", 'price', False, "Binance EURUSDT") or EUR_TO_USDT_FALLBACK
-                    rate = rate_btc_usdt / rate_eur_usdt
-                redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
-                return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\(Binance via USDT\\)"
 
     logger.warning(f"No rate found for {from_key} to {to_key}")
     return None, "Курс недоступен на данный момент"
