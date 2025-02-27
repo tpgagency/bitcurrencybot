@@ -13,7 +13,6 @@ from telegram.ext import (
     CallbackQueryHandler,
     filters,
     ContextTypes,
-    JobQueue,
 )
 import redis
 from telegram.error import TelegramError
@@ -315,7 +314,7 @@ async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     from_currency, to_currency, target_rate = args[0].lower(), args[1].lower(), float(args[2])
-    if from_currency not in CURRENCIES or to_currency not in CURRENCIES:
+    if from_currency not in CURRENCIES or to_currency not in CURENCIES:
         await update.effective_message.reply_text("❌ Ошибка: валюта не поддерживается", parse_mode=ParseMode.MARKDOWN_V2)
         return
 
@@ -579,7 +578,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, from_currency, to_currency = action.split(":")
         result, rate_info = await get_exchange_rate(from_currency, to_currency)
         if result:
-            from_code, to_code = CURRENCIES[from_currency]['code'], CURRENCIES[to_currency]['code']
+            from_code, to_code = CURRENCIES[from_currency]['code'], CURENCIES[to_currency]['code']
             precision = 8 if to_code in HIGH_PRECISION_CURRENCIES else 2
             await query.edit_message_text(
                 f"💰 *1\\.0 {from_code}* \\= *{escape_markdown_v2(str(round(result, precision)))} {to_code}*\n"
@@ -657,13 +656,12 @@ async def main():
     app.add_handler(CallbackQueryHandler(button))
 
     # Инициализация job_queue
-    job_queue = app.job_queue
-    if job_queue:
-        job_queue.run_repeating(check_payment_job, interval=60, name="check_payment")
-        job_queue.run_repeating(check_alerts_job, interval=60, name="check_alerts")
-    else:
-        logger.critical("JobQueue is not initialized!")
+    if app.job_queue is None:
+        logger.critical("JobQueue is not initialized! Ensure python-telegram-bot is installed with [job-queue] support.")
         return
+
+    app.job_queue.run_repeating(check_payment_job, interval=60, name="check_payment")
+    app.job_queue.run_repeating(check_alerts_job, interval=60, name="check_alerts")
 
     # Установка команд
     await set_bot_commands(app)
