@@ -205,42 +205,41 @@ async def get_exchange_rate(from_currency: str, to_currency: str, amount: float 
         return amount, f"1 {from_key.upper()} \\= 1 {to_key.upper()}"
 
     async with aiohttp.ClientSession() as session:
-        # Параллельные запросы к API
-        tasks = [
-            fetch_rate(session, f"{BINANCE_API_URL}?symbol={from_code}{to_code}", 'price', False, "Binance direct"),
-            fetch_rate(session, f"{BINANCE_API_URL}?symbol={to_code}{from_code}", 'price', True, "Binance reverse"),
-            fetch_rate(session, WHITEBIT_API_URL, f"{from_code}_{to_code}", False, "WhiteBIT direct"),
-            fetch_rate(session, WHITEBIT_API_URL, f"{to_code}_{from_code}", True, "WhiteBIT reverse"),
-            fetch_kucoin_rate(session, from_code, to_code)
+        # Прямые запросы только для популярных пар
+        direct_pairs = {'BTCUSDT', 'ETHUSDT', 'USDTUAH', 'EURUSDT'}
+        tasks = []
+        if f"{from_code}{to_code}" in direct_pairs:
+            tasks.append(fetch_rate(session, f"{BINANCE_API_URL}?symbol={from_code}{to_code}", 'price', False, "Binance direct"))
+        if f"{to_code}{from_code}" in direct_pairs:
+            tasks.append(fetch_rate(session, f"{BINANCE_API_URL}?symbol={to_code}{from_code}", 'price', True, "Binance reverse"))
+        tasks.append(fetch_kucoin_rate(session, from_code, to_code))
+
+        # Мост через USDT всегда
+        usdt_tasks = [
+            fetch_rate(session, f"{BINANCE_API_URL}?symbol={from_code}USDT", 'price', False, f"Binance {from_code}USDT"),
+            fetch_rate(session, f"{BINANCE_API_URL}?symbol=USDT{to_code}", 'price', True, f"Binance USDT{to_code}")
         ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Выполняем все запросы параллельно
+        results = await asyncio.gather(*(tasks + usdt_tasks), return_exceptions=True)
 
         valid_rates = []
-        sources = ["Binance direct", "Binance reverse", "WhiteBIT direct", "WhiteBIT reverse", "KuCoin"]
-        for rate, source in zip(results, sources):
+        sources = ["Binance direct", "Binance reverse", "KuCoin", f"Binance {from_code}USDT", f"Binance USDT{to_code}"]
+        for i, (rate, source) in enumerate(zip(results, sources)):
             if isinstance(rate, float) and rate > 0:
-                valid_rates.append((rate, source))
+                if i < len(tasks):  # Прямые запросы
+                    valid_rates.append((rate, source))
+                else:  # Мост через USDT
+                    valid_rates.append((rate, source))
 
         if valid_rates:
-            rate, source = valid_rates[0]  # Берем первый валидный курс
+            if len(valid_rates) >= 2 and "USDT" in valid_rates[0][1] and "USDT" in valid_rates[1][1]:
+                rate = valid_rates[0][0] / valid_rates[1][0]  # Мост через USDT
+                source = "Binance via USDT"
+            else:
+                rate, source = valid_rates[0]  # Первый валидный прямой курс
             redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
             return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\({escape_markdown_v2(source)}\\)"
-
-        # Мост через USDT
-        if from_key != 'usdt' and to_key != 'usdt':
-            tasks_usdt = [
-                fetch_rate(session, f"{BINANCE_API_URL}?symbol={from_code}USDT", 'price', False, f"Binance {from_code}USDT"),
-                fetch_rate(session, f"{BINANCE_API_URL}?symbol=USDT{to_code}", 'price', True, f"Binance USDT{to_code}")
-            ]
-            usdt_results = await asyncio.gather(*tasks_usdt, return_exceptions=True)
-
-            rate_from_usdt = usdt_results[0] if isinstance(usdt_results[0], float) and usdt_results[0] > 0 else None
-            rate_to_usdt = usdt_results[1] if isinstance(usdt_results[1], float) and usdt_results[1] > 0 else None
-
-            if rate_from_usdt and rate_to_usdt:
-                rate = rate_from_usdt / rate_to_usdt
-                redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
-                return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\(Binance via USDT\\)"
 
         # Fallback для BTC, ETH и других валют
         if from_key == 'btc' and to_key in ['usdt', 'eur', 'uah']:
@@ -268,7 +267,7 @@ async def get_exchange_rate(from_currency: str, to_currency: str, amount: float 
                 redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
                 return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\(Binance via USDT\\)"
 
-        # Fallback для UAH
+        # Fallback для UAH и других валют
         if from_key == 'uah' and to_key == 'usdt':
             rate = UAH_TO_USDT_FALLBACK
             redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
@@ -290,7 +289,7 @@ async def get_exchange_rate(from_currency: str, to_currency: str, amount: float 
             return amount * rate, f"1 {from_key.upper()} \\= {escape_markdown_v2(str(rate))} {to_key.upper()} \\(Binance via USDT\\)"
 
     logger.warning(f"No rate found for {from_key} to {to_key}")
-    return None, "Курс недоступен на данный момент"
+    return None, "Курс недоступен на данный момент\\. Попробуй позже\\!"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await enforce_subscription(update, context):
@@ -606,11 +605,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['last_request'] = time.time()
         text = update.effective_message.text.lower().split()
         amount = float(text[0]) if text[0].replace('.', '', 1).isdigit() else 1.0
-        from_currency, to_currency = text[1 if amount != 1.0 else 0], text[2 if amount != 1.0 else 1]
+        from_currency = text[1 if amount != 1.0 else 0]
+        to_currency = text[2 if amount != 1.0 else 1]
         save_stats(user_id, f"{from_currency}_to_{to_currency}")
         result, rate_info = await get_exchange_rate(from_currency, to_currency, amount)
         if result is None:
-            raise ValueError(rate_info)
+            await update.effective_message.reply_text(
+                f"❌ Ошибка: {rate_info}",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💱 Попробовать снова", callback_data="converter")]]),
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
+            return
 
         from_code, to_code = CURRENCIES[from_currency.lower()]['code'], CURRENCIES[to_currency.lower()]['code']
         precision = 8 if to_code in HIGH_PRECISION_CURRENCIES else 2
@@ -626,8 +631,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_history(user_id, from_code, to_code, amount, result)
     except (IndexError, ValueError) as e:
         try:
+            error_msg = escape_markdown_v2(str(e) if isinstance(e, ValueError) else "Неверный формат")
             await update.effective_message.reply_text(
-                f"❌ Ошибка: {escape_markdown_v2(str(e) if isinstance(e, ValueError) else 'Неверный формат')}\nПример: `100\\.0 uah usdt`",
+                f"❌ Ошибка: {error_msg}\nПример: `100\\.0 uah usdt`",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💱 Попробовать снова", callback_data="converter")]]),
                 parse_mode=ParseMode.MARKDOWN_V2
             )
