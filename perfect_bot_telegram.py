@@ -4,14 +4,14 @@ import time
 import logging
 import requests
 import asyncio
-from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 import redis
-from telegram.error import NetworkError, RetryAfter, TelegramError
+from telegram.error import NetworkError, TelegramError
 from collections import deque
 from telegram.constants import ParseMode
 from typing import Optional, Tuple, Dict
-from aiohttp import ClientSession  # Для асинхронных запросов
+from aiohttp import ClientSession
 
 # Настройка логирования
 logging.basicConfig(
@@ -40,7 +40,7 @@ CACHE_TIMEOUT = 300  # 5 минут
 ADMIN_IDS = ["1058875848", "6403305626"]
 HISTORY_LIMIT = 20
 MAX_RETRIES = 3
-RATE_LIMIT_DELAY = 0.2  # Задержка для избежания лимитов API
+RATE_LIMIT_DELAY = 0.2
 
 # API endpoints
 BINANCE_API_URL = "https://api.binance.com/api/v3/ticker/price"
@@ -170,12 +170,9 @@ def check_limit(user_id: str) -> Tuple[bool, str]:
     return remaining > 0, str(remaining)
 
 async def fetch_all_rates(session: ClientSession) -> Dict[str, float]:
-    """Асинхронная загрузка всех курсов с Binance и WhiteBIT."""
     rates = {}
-    
-    # Binance
     try:
-        async with session.get(f"{BINANCE_API_URL}") as resp:
+        async with session.get(BINANCE_API_URL) as resp:
             if resp.status == 200:
                 data = await resp.json()
                 for item in data:
@@ -184,7 +181,6 @@ async def fetch_all_rates(session: ClientSession) -> Dict[str, float]:
     except Exception as e:
         logger.warning(f"Failed to fetch Binance rates: {e}")
     
-    # WhiteBIT
     try:
         async with session.get(WHITEBIT_API_URL) as resp:
             if resp.status == 200:
@@ -222,21 +218,18 @@ async def get_exchange_rate(from_currency: str, to_currency: str, amount: float 
     async with ClientSession() as session:
         rates = await fetch_all_rates(session)
         
-        # Прямой курс
         pair = f"{from_code}{to_code}"
         if pair in rates:
             rate = rates[pair]
             redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
             return amount * rate, f"1 {from_code} = {rate} {to_code} (direct)"
         
-        # Обратный курс
         reverse_pair = f"{to_code}{from_code}"
         if reverse_pair in rates:
             rate = 1 / rates[reverse_pair]
             redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
             return amount * rate, f"1 {from_code} = {rate} {to_code} (reverse)"
         
-        # Через USDT
         if from_key != 'usdt' and to_key != 'usdt':
             from_usdt = rates.get(f"{from_code}USDT") or (1 / rates.get(f"USDT{from_code}", 0) if rates.get(f"USDT{from_code}") else 0)
             to_usdt = rates.get(f"{to_code}USDT") or (1 / rates.get(f"USDT{to_code}", 0) if rates.get(f"USDT{to_code}") else 0)
@@ -245,7 +238,6 @@ async def get_exchange_rate(from_currency: str, to_currency: str, amount: float 
                 redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
                 return amount * rate, f"1 {from_code} = {rate} {to_code} (via USDT)"
         
-        # Через BTC
         if from_key != 'btc' and to_key != 'btc':
             from_btc = rates.get(f"{from_code}BTC") or (1 / rates.get(f"BTC{from_code}", 0) if rates.get(f"BTC{from_code}") else 0)
             to_btc = rates.get(f"{to_code}BTC") or (1 / rates.get(f"BTC{to_code}", 0) if rates.get(f"BTC{to_code}") else 0)
@@ -254,7 +246,6 @@ async def get_exchange_rate(from_currency: str, to_currency: str, amount: float 
                 redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
                 return amount * rate, f"1 {from_code} = {rate} {to_code} (via BTC)"
         
-        # Fallback
         if from_key == 'uah' and to_key == 'usdt':
             rate = UAH_TO_USDT_FALLBACK
             redis_client.setex(cache_key, CACHE_TIMEOUT, rate)
@@ -283,8 +274,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.effective_message.reply_text(
-        "👋 *Привет!* Я BitCurrencyBot — твой идеальный помощник для конвертации валют в реальном времени!\n"
-        "🌟 Выбери действие ниже или напиши запрос (например, \"usd btc\" или \"100 uah usdt\").\n"
+        "👋 *Привет!* Я BitCurrencyBot — твой помощник для конвертации валют!\n"
+        "🌟 Выбери действие или напиши запрос (например, \"usd btc\" или \"100 uah usdt\").\n"
         f"🔑 *Бесплатно:* {FREE_REQUEST_LIMIT} запросов в сутки.\n"
         f"🌟 *Безлимит:* /subscribe за {SUBSCRIPTION_PRICE} USDT.{AD_MESSAGE}",
         reply_markup=reply_markup,
@@ -316,7 +307,7 @@ async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.effective_message.reply_text(
-            "🔔 *Настрой уведомления!* Введи в формате: `/alert <валюта1> <валюта2> <курс>`\nПримеры доступны ниже:",
+            "🔔 *Настрой уведомления!* Введи: `/alert <валюта1> <валюта2> <курс>`\nПримеры ниже:",
             reply_markup=reply_markup,
             parse_mode=ParseMode.MARKDOWN
         )
@@ -324,7 +315,7 @@ async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     from_currency, to_currency, target_rate = args[0].lower(), args[1].lower(), float(args[2])
     if from_currency not in CURRENCIES or to_currency not in CURRENCIES:
-        await update.effective_message.reply_text("❌ Ошибка: одна из валют не поддерживается", parse_mode=ParseMode.MARKDOWN)
+        await update.effective_message.reply_text("❌ Ошибка: валюта не поддерживается", parse_mode=ParseMode.MARKDOWN)
         return
     
     alerts = json.loads(redis_client.get(f"alerts:{user_id}") or '[]')
@@ -411,7 +402,7 @@ async def referrals(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.effective_message.reply_text(
-        f"👥 *Твоя реферальная ссылка:* `{ref_link}`\n👤 Приглашено пользователей: *{refs}*\n🌟 Приглашай друзей и получай бонусы (скоро будет доступно)!",
+        f"👥 *Реферальная ссылка:* `{ref_link}`\n👤 Приглашено: *{refs}*\n🌟 Приглашай друзей!",
         reply_markup=reply_markup,
         parse_mode=ParseMode.MARKDOWN
     )
@@ -449,7 +440,7 @@ async def handle_referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 referrals.append(user_id)
                 redis_client.setex(f"referrals:{referrer_id}", 30 * 24 * 60 * 60, json.dumps(referrals))
                 await update.effective_message.reply_text(
-                    "👥 Ты был приглашён через реферальную ссылку! Спасибо!",
+                    "👥 Приглашение через реферальную ссылку принято!",
                     parse_mode=ParseMode.MARKDOWN
                 )
 
@@ -578,7 +569,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(query.from_user.id)
     
     if not await enforce_subscription(update, context):
-        await query.edit_message_text(f"🚫 Подпишись на {CHANNEL_USERNAME} для продолжения!", parse_mode=ParseMode.MARKDOWN)
+        await query.edit_message_text(f"🚫 Подпишись на {CHANNEL_USERNAME}!", parse_mode=ParseMode.MARKDOWN)
         return
     
     stats = redis_client.hgetall('stats') or {'subscriptions': '{}'}
@@ -591,7 +582,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     can_proceed, remaining = check_limit(user_id)
     if not can_proceed:
-        await query.edit_message_text(f"❌ Лимит {FREE_REQUEST_LIMIT} запросов исчерпан. Подпишись: /subscribe", parse_mode=ParseMode.MARKDOWN)
+        await query.edit_message_text(f"❌ Лимит {FREE_REQUEST_LIMIT} запросов исчерпан. /subscribe", parse_mode=ParseMode.MARKDOWN)
         return
     
     context.user_data['last_request'] = time.time()
@@ -609,12 +600,12 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("🔙 Назад", callback_data="start")]
         ]
         await query.edit_message_text(
-            "💱 *Выбери валютную пару или введи вручную (например, \"100 uah usdt\"):*",
+            "💱 *Выбери пару или введи вручную (например, \"100 uah usdt\"):*",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode=ParseMode.MARKDOWN
         )
     elif action == "price":
-        await query.edit_message_text("📈 *Введи валюту для проверки текущей цены, например: \"btc usd\"*", parse_mode=ParseMode.MARKDOWN)
+        await query.edit_message_text("📈 *Введи валюту, например: \"btc usd\"*", parse_mode=ParseMode.MARKDOWN)
     elif action == "stats":
         await stats(update, context)
     elif action == "subscribe":
@@ -626,7 +617,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "history":
         await history(update, context)
     elif action == "manual_convert":
-        await query.edit_message_text("💱 *Введи запрос вручную:* например, \"100 uah usdt\"", parse_mode=ParseMode.MARKDOWN)
+        await query.edit_message_text("💱 *Введи запрос: \"100 uah usdt\"*", parse_mode=ParseMode.MARKDOWN)
     elif action == "copy_ref":
         ref_link = f"https://t.me/{BOT_USERNAME}?start=ref_{user_id}"
         await query.answer(text=f"🌟 Скопировано: {ref_link}", show_alert=False)
@@ -654,7 +645,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.edit_message_text(f"❌ Ошибка: {rate_info}", parse_mode=ParseMode.MARKDOWN)
 
-if __name__ == "__main__":
+async def main():
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     
     application.add_handler(CommandHandler("start", start))
@@ -680,13 +671,9 @@ if __name__ == "__main__":
         })
         redis_client.expire('stats', 30 * 24 * 60 * 60)
     
+    await set_bot_commands(application)
     logger.info("Bot starting...")
-    while True:
-        try:
-            application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, timeout=30)
-        except (NetworkError, TelegramError) as e:
-            logger.error(f"Polling error: {e}. Retrying in 5 seconds...")
-            time.sleep(5)
-        except Exception as e:
-            logger.critical(f"Fatal error: {e}. Retrying in 10 seconds...")
-            time.sleep(10)
+    await application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, timeout=30)
+
+if __name__ == "__main__":
+    asyncio.run(main())
