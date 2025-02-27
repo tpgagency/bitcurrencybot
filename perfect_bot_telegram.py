@@ -81,7 +81,6 @@ if not init_redis_connection():
     exit(1)
 
 def escape_markdown_v2(text: str) -> str:
-    """Экранирование зарезервированных символов для MarkdownV2"""
     reserved_chars = r'_*[]()~`>#+-=|{}.!'
     for char in reserved_chars:
         text = text.replace(char, f'\\{char}')
@@ -192,7 +191,6 @@ async def get_exchange_rate(from_currency: str, to_currency: str, amount: float 
         return amount, f"1 {from_key.upper()} \\= 1 {to_key.upper()}"
 
     async with aiohttp.ClientSession() as session:
-        # Прямые запросы
         sources = [
             (f"{BINANCE_API_URL}?symbol={from_code}{to_code}", 'price', False, "Binance direct"),
             (f"{BINANCE_API_URL}?symbol={to_code}{from_code}", 'price', True, "Binance reverse"),
@@ -207,13 +205,11 @@ async def get_exchange_rate(from_currency: str, to_currency: str, amount: float 
                 formatted_rate = rate if not reverse else 1/rate
                 return amount * formatted_rate, f"1 {from_code} \\= {escape_markdown_v2(str(formatted_rate))} {to_code} \\({escape_markdown_v2(source)}\\)"
 
-        # KuCoin
         rate = await fetch_kucoin_rate(session, from_code, to_code)
         if rate:
             redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
             return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\(KuCoin\\)"
 
-        # Bridge через USDT и BTC
         for bridge in ('USDT', 'BTC'):
             if from_key != bridge.lower() and to_key != bridge.lower():
                 rate_from = await fetch_rate(session, f"{BINANCE_API_URL}?symbol={from_code}{bridge}", 'price', False, f"Binance {from_code}{bridge}")
@@ -230,7 +226,6 @@ async def get_exchange_rate(from_currency: str, to_currency: str, amount: float 
                         redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
                         return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\(Binance via {bridge}\\)"
 
-        # Fallback для UAH-USDT и USDT-UAH
         if from_key == 'uah' and to_key == 'usdt':
             rate = UAH_TO_USDT_FALLBACK
             redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
@@ -314,7 +309,7 @@ async def alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     from_currency, to_currency, target_rate = args[0].lower(), args[1].lower(), float(args[2])
-    if from_currency not in CURRENCIES or to_currency not in CURENCIES:
+    if from_currency not in CURRENCIES or to_currency not in CURRENCIES:
         await update.effective_message.reply_text("❌ Ошибка: валюта не поддерживается", parse_mode=ParseMode.MARKDOWN_V2)
         return
 
@@ -499,7 +494,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     stats = json.loads(redis_client.get('stats') or '{}')
     is_subscribed = user_id in ADMIN_IDS or stats.get("subscriptions", {}).get(user_id)
-    delay = 0 if is_subscribed else 5  # Без задержки для подписчиков и админов
+    delay = 0 if is_subscribed else 5
 
     if 'last_request' in context.user_data and time.time() - context.user_data['last_request'] < delay:
         await update.effective_message.reply_text(f"⏳ Подожди {delay} секунд{'у' if delay == 1 else ''}\!", parse_mode=ParseMode.MARKDOWN_V2)
@@ -548,7 +543,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(query.from_user.id)
     stats = json.loads(redis_client.get('stats') or '{}')
     is_subscribed = user_id in ADMIN_IDS or stats.get("subscriptions", {}).get(user_id)
-    delay = 0 if is_subscribed else 5  # Без задержки для подписчиков и админов
+    delay = 0 if is_subscribed else 5
 
     if 'last_request' in context.user_data and time.time() - context.user_data['last_request'] < delay:
         await query.edit_message_text(f"⏳ Подожди {delay} секунд{'у' if delay == 1 else ''}\!", parse_mode=ParseMode.MARKDOWN_V2)
@@ -578,7 +573,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, from_currency, to_currency = action.split(":")
         result, rate_info = await get_exchange_rate(from_currency, to_currency)
         if result:
-            from_code, to_code = CURRENCIES[from_currency]['code'], CURENCIES[to_currency]['code']
+            from_code, to_code = CURENCIES[from_currency]['code'], CURENCIES[to_currency]['code']
             precision = 8 if to_code in HIGH_PRECISION_CURRENCIES else 2
             await query.edit_message_text(
                 f"💰 *1\\.0 {from_code}* \\= *{escape_markdown_v2(str(round(result, precision)))} {to_code}*\n"
@@ -635,16 +630,9 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN_V2
         )
 
-async def shutdown(application):
-    """Очистка перед завершением приложения"""
-    await application.stop()
-    await application.job_queue.stop()
-    logger.info("Application shutdown complete")
-
 async def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # Регистрация обработчиков
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("currencies", currencies))
     app.add_handler(CommandHandler("alert", alert))
@@ -655,42 +643,27 @@ async def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(button))
 
-    # Инициализация job_queue
     if app.job_queue is None:
-        logger.critical("JobQueue is not initialized! Ensure python-telegram-bot is installed with [job-queue] support.")
+        logger.critical("JobQueue is not initialized! Install python-telegram-bot with [job-queue] support.")
         return
 
     app.job_queue.run_repeating(check_payment_job, interval=60, name="check_payment")
     app.job_queue.run_repeating(check_alerts_job, interval=60, name="check_alerts")
 
-    # Установка команд
+    await app.initialize()
     await set_bot_commands(app)
 
     if not redis_client.exists('stats'):
         redis_client.setex('stats', 30 * 24 * 60 * 60, json.dumps({"users": {}, "total_requests": 0, "request_types": {}, "subscriptions": {}, "revenue": 0.0}))
 
     logger.info("Bot starting...")
-    try:
-        await app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, timeout=30)
-    except KeyboardInterrupt:
-        await shutdown(app)
-    except Exception as e:
-        logger.critical(f"Fatal error: {e}. Retrying in 10 seconds...")
-        await shutdown(app)
-        time.sleep(10)
-        await main()
-
-async def set_bot_commands(application):
-    await application.bot.set_my_commands([
-        ("start", "Главное меню"),
-        ("currencies", "Список валют"),
-        ("stats", "Статистика"),
-        ("subscribe", "Подписка"),
-        ("alert", "Уведомления"),
-        ("referrals", "Рефералы"),
-        ("history", "История запросов")
-    ])
-    logger.info("Bot commands set")
+    await app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True, timeout=30)
+    await app.shutdown()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.critical(f"Unexpected error: {e}")
