@@ -40,7 +40,7 @@ if not TELEGRAM_TOKEN or not CRYPTO_PAY_TOKEN:
 AD_MESSAGE = "\n\n📢 Подпишись на @tpgbit для новостей о крипте\\!"
 FREE_REQUEST_LIMIT = 5
 SUBSCRIPTION_PRICE = 5
-CACHE_TIMEOUT = 60
+CACHE_TIMEOUT = 300  # 5 минут для кэша курсов
 ADMIN_IDS = {"1058875848", "6403305626"}
 HISTORY_LIMIT = 20
 MAX_RETRIES = 3
@@ -62,6 +62,7 @@ CURRENCIES = {
 
 UAH_TO_USDT_FALLBACK = 0.0239  # 1 UAH = 0.0239 USDT
 USDT_TO_UAH_FALLBACK = 41.84   # 1 USDT = 41.84 UAH
+EUR_TO_USDT_FALLBACK = 1.08    # 1 EUR = 1.08 USDT (примерное значение)
 
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True, ssl_cert_reqs="none", socket_timeout=10)
 
@@ -163,7 +164,7 @@ async def fetch_rate(session: aiohttp.ClientSession, url: str, key: str, reverse
             if rate <= 0:
                 logger.warning(f"{api_name} returned invalid rate: {rate}")
                 return None
-            return 1 / rate if reverse and rate != 0 else rate
+            return 1 / rate if reverse else rate
     except (aiohttp.ClientError, ValueError, KeyError, TypeError) as e:
         logger.warning(f"Error fetching rate from {api_name}: {str(e)}")
         return None
@@ -187,7 +188,7 @@ async def fetch_kucoin_rate(session: aiohttp.ClientSession, from_code: str, to_c
 async def get_exchange_rate(from_currency: str, to_currency: str, amount: float = 1.0) -> Tuple[Optional[float], str]:
     from_key, to_key = from_currency.lower(), to_currency.lower()
     if from_key not in CURRENCIES or to_key not in CURRENCIES:
-        return None, "Неподдерживаемая валюта или неверный формат\\. Пример: `100 uah usdt`"
+        return None, "Неподдерживаемая валюта или неверный формат\\. Пример: `100\\.0 uah usdt`"
 
     cache_key = f"rate:{from_key}_{to_key}"
     cached = redis_client.get(cache_key)
@@ -204,41 +205,47 @@ async def get_exchange_rate(from_currency: str, to_currency: str, amount: float 
         return amount, f"1 {from_key.upper()} \\= 1 {to_key.upper()}"
 
     async with aiohttp.ClientSession() as session:
-        sources = [
-            (f"{BINANCE_API_URL}?symbol={from_code}{to_code}", 'price', False, "Binance direct"),
-            (f"{BINANCE_API_URL}?symbol={to_code}{from_code}", 'price', True, "Binance reverse"),
-            (f"{WHITEBIT_API_URL}", f"{from_code}_{to_code}", False, "WhiteBIT direct"),
-            (f"{WHITEBIT_API_URL}", f"{to_code}_{from_code}", True, "WhiteBIT reverse"),
+        # Параллельные запросы к API
+        tasks = [
+            fetch_rate(session, f"{BINANCE_API_URL}?symbol={from_code}{to_code}", 'price', False, "Binance direct"),
+            fetch_rate(session, f"{BINANCE_API_URL}?symbol={to_code}{from_code}", 'price', True, "Binance reverse"),
+            fetch_rate(session, WHITEBIT_API_URL, f"{from_code}_{to_code}", False, "WhiteBIT direct"),
+            fetch_rate(session, WHITEBIT_API_URL, f"{to_code}_{from_code}", True, "WhiteBIT reverse"),
+            fetch_kucoin_rate(session, from_code, to_code)
         ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        for url, key, reverse, source in sources:
-            rate = await fetch_rate(session, url, key, reverse, source)
-            if rate:
-                redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
-                formatted_rate = 1/rate if reverse else rate
-                return amount * formatted_rate, f"1 {from_code} \\= {escape_markdown_v2(str(formatted_rate))} {to_code} \\({escape_markdown_v2(source)}\\)"
+        valid_rates = []
+        sources = ["Binance direct", "Binance reverse", "WhiteBIT direct", "WhiteBIT reverse", "KuCoin"]
+        for rate, source in zip(results, sources):
+            if isinstance(rate, float) and rate > 0:
+                valid_rates.append((rate, source))
 
-        rate = await fetch_kucoin_rate(session, from_code, to_code)
-        if rate:
+        if valid_rates:
+            # Выбираем первый валидный курс (или можем взять среднее, если нужно)
+            rate, source = valid_rates[0]
             redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
-            return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\(KuCoin\\)"
+            return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\({escape_markdown_v2(source)}\\)"
 
-        # Используем USDT как мост
+        # Мост через USDT
         if from_key != 'usdt' and to_key != 'usdt':
-            rate_from_usdt = await fetch_rate(session, f"{BINANCE_API_URL}?symbol={from_code}USDT", 'price', False, f"Binance {from_code}USDT")
-            if not rate_from_usdt:
-                rate_from_usdt = await fetch_rate(session, f"{BINANCE_API_URL}?symbol=USDT{from_code}", 'price', True, f"Binance USDT{from_code}")
-            
-            rate_to_usdt = await fetch_rate(session, f"{BINANCE_API_URL}?symbol={to_code}USDT", 'price', False, f"Binance {to_code}USDT")
-            if not rate_to_usdt:
-                rate_to_usdt = await fetch_rate(session, f"{BINANCE_API_URL}?symbol=USDT{to_code}", 'price', True, f"Binance USDT{to_code}")
+            tasks_usdt = [
+                fetch_rate(session, f"{BINANCE_API_URL}?symbol={from_code}USDT", 'price', False, f"Binance {from_code}USDT"),
+                fetch_rate(session, f"{BINANCE_API_URL}?symbol=USDT{from_code}", 'price', True, f"Binance USDT{from_code}"),
+                fetch_rate(session, f"{BINANCE_API_URL}?symbol={to_code}USDT", 'price', False, f"Binance {to_code}USDT"),
+                fetch_rate(session, f"{BINANCE_API_URL}?symbol=USDT{to_code}", 'price', True, f"Binance USDT{to_code}")
+            ]
+            usdt_results = await asyncio.gather(*tasks_usdt, return_exceptions=True)
 
-            if rate_from_usdt and rate_to_usdt:
+            rate_from_usdt = usdt_results[0] if isinstance(usdt_results[0], float) else usdt_results[1]
+            rate_to_usdt = usdt_results[2] if isinstance(usdt_results[2], float) else usdt_results[3]
+
+            if rate_from_usdt and rate_to_usdt and rate_to_usdt != 0:
                 rate = rate_from_usdt / rate_to_usdt
                 redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
                 return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\(Binance via USDT\\)"
 
-        # Fallback для UAH
+        # Fallback для UAH и других валют
         if from_key == 'uah' and to_key == 'usdt':
             rate = UAH_TO_USDT_FALLBACK
             redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
@@ -249,26 +256,27 @@ async def get_exchange_rate(from_currency: str, to_currency: str, amount: float 
             return amount * rate, f"1 {from_key.upper()} \\= {escape_markdown_v2(str(rate))} {to_key.upper()} \\(fallback\\)"
         elif from_key == 'uah' and to_key == 'eur':
             rate_usdt = UAH_TO_USDT_FALLBACK
-            rate_eur = await fetch_rate(session, f"{BINANCE_API_URL}?symbol=EURUSDT", 'price', True, "Binance EURUSDT") or 1.08  # Fallback EUR/USDT
+            rate_eur = await fetch_rate(session, f"{BINANCE_API_URL}?symbol=EURUSDT", 'price', True, "Binance EURUSDT") or EUR_TO_USDT_FALLBACK
             rate = rate_usdt / rate_eur
             redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
             return amount * rate, f"1 {from_key.upper()} \\= {escape_markdown_v2(str(rate))} {to_key.upper()} \\(Binance via USDT\\)"
         elif from_key == 'eur' and to_key == 'uah':
-            rate_usdt = await fetch_rate(session, f"{BINANCE_API_URL}?symbol=EURUSDT", 'price', False, "Binance EURUSDT") or 1.08  # Fallback EUR/USDT
+            rate_usdt = await fetch_rate(session, f"{BINANCE_API_URL}?symbol=EURUSDT", 'price', False, "Binance EURUSDT") or EUR_TO_USDT_FALLBACK
             rate = rate_usdt * USDT_TO_UAH_FALLBACK
             redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
             return amount * rate, f"1 {from_key.upper()} \\= {escape_markdown_v2(str(rate))} {to_key.upper()} \\(Binance via USDT\\)"
         elif from_key == 'btc' and to_key in ['uah', 'eur', 'usdt']:
-            rate_btc_usdt = await fetch_rate(session, f"{BINANCE_API_URL}?symbol=BTCUSDT", 'price', False, "Binance BTCUSDT") or 60000  # Fallback BTC/USDT
-            if to_key == 'usdt':
-                rate = rate_btc_usdt
-            elif to_key == 'uah':
-                rate = rate_btc_usdt * USDT_TO_UAH_FALLBACK
-            elif to_key == 'eur':
-                rate_eur_usdt = await fetch_rate(session, f"{BINANCE_API_URL}?symbol=EURUSDT", 'price', False, "Binance EURUSDT") or 1.08
-                rate = rate_btc_usdt / rate_eur_usdt
-            redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
-            return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\(Binance via USDT\\)"
+            rate_btc_usdt = await fetch_rate(session, f"{BINANCE_API_URL}?symbol=BTCUSDT", 'price', False, "Binance BTCUSDT")
+            if rate_btc_usdt:
+                if to_key == 'usdt':
+                    rate = rate_btc_usdt
+                elif to_key == 'uah':
+                    rate = rate_btc_usdt * USDT_TO_UAH_FALLBACK
+                elif to_key == 'eur':
+                    rate_eur_usdt = await fetch_rate(session, f"{BINANCE_API_URL}?symbol=EURUSDT", 'price', False, "Binance EURUSDT") or EUR_TO_USDT_FALLBACK
+                    rate = rate_btc_usdt / rate_eur_usdt
+                redis_client.setex(cache_key, CACHE_TIMEOUT, str(rate))
+                return amount * rate, f"1 {from_code} \\= {escape_markdown_v2(str(rate))} {to_code} \\(Binance via USDT\\)"
 
     logger.warning(f"No rate found for {from_key} to {to_key}")
     return None, "Курс недоступен на данный момент"
@@ -608,7 +616,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except (IndexError, ValueError) as e:
         try:
             await update.effective_message.reply_text(
-                f"❌ Ошибка: {escape_markdown_v2(str(e) if isinstance(e, ValueError) else 'Неверный формат')}\nПример: `100 uah usdt`",
+                f"❌ Ошибка: {escape_markdown_v2(str(e) if isinstance(e, ValueError) else 'Неверный формат')}\nПример: `100\\.0 uah usdt`",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💱 Попробовать снова", callback_data="converter")]]),
                 parse_mode=ParseMode.MARKDOWN_V2
             )
@@ -654,7 +662,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await start(update, context)
         elif action == "converter":
             await query.edit_message_text(
-                "💱 *Выбери пару или введи вручную \\(например, '100 uah usdt'\\)*:",
+                "💱 *Выбери пару или введи вручную \\(например, '100\\.0 uah usdt'\\)*:",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("💰 USD → BTC", callback_data="convert:usd:btc"), InlineKeyboardButton("💶 EUR → UAH", callback_data="convert:eur:uah")],
                     [InlineKeyboardButton("₿ BTC → ETH", callback_data="convert:btc:eth"), InlineKeyboardButton("₴ UAH → USDT", callback_data="convert:uah:usdt")],
@@ -681,7 +689,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await query.edit_message_text(f"❌ Ошибка: {escape_markdown_v2(rate_info)}", parse_mode=ParseMode.MARKDOWN_V2)
         elif action == "manual_convert":
-            await query.edit_message_text("💱 *Введи запрос вручную*: например, '100 uah usdt'", parse_mode=ParseMode.MARKDOWN_V2)
+            await query.edit_message_text("💱 *Введи запрос вручную*: например, '100\\.0 uah usdt'", parse_mode=ParseMode.MARKDOWN_V2)
         elif action == "stats":
             await stats_handler(update, context)
         elif action == "subscribe":
